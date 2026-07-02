@@ -69,6 +69,12 @@ function syncNodeGraphPatchParameterFromSlider(slider, options = {}) {
       patchNode.paramMeta[key],
     ),
   };
+  // Phase 6 round 4: no-op unless a multiplayer session is active
+  // (node-graph-patch-lww-editor-wiring.js) -- keeps this the same
+  // single-player-cheap write path it always was when multiplayer isn't in use.
+  if (typeof nodeGraphLwwNotifyLocalFieldEdit === "function") {
+    nodeGraphLwwNotifyLocalFieldEdit(node, `params.${key}`, patchNode.params[key]);
+  }
   if (
     nodeGraphModuleIsGraphType(patchNode.type) &&
     typeof nodeGraphGraphEndpointYLockEnabledForNode === "function" &&

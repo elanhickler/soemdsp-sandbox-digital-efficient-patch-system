@@ -39,6 +39,7 @@ work tries not to obstruct it, but doesn't claim to deliver it.
 - [Phase 6: a real multiplayer merge engine](#-phase-6-an-actual-multiplayer-merge-engine)
 - [Phase 6, round 2: applying a merge live](#-phase-6-round-2-applying-a-merge-to-the-live-app-without-crashing-it)
 - [Phase 6, round 3: the actual network hop](#-phase-6-round-3-the-actual-network-hop)
+- [Phase 6, round 4: wiring real slider drags](#-phase-6-round-4-wiring-it-to-real-slider-drags)
 - [Plan of attack](#-plan-of-attack)
 - [Running it](#-running-it)
 - [License](#-license)
@@ -72,9 +73,10 @@ So this fork's actual mission is two-layered:
 
 **Short version: two people can edit the same patch, on two different
 machines, and both sets of changes land correctly — proven with a real
-merge engine talking over a real network hop, not assumed.** This isn't
-wired into the editor's UI yet (see "not built" below), but every piece of
-the pipeline underneath it has been built and independently verified.
+merge engine talking over a real network hop, not assumed.** Dragging a
+parameter slider now actually broadcasts, and a background loop applies
+whatever comes back automatically — every piece of the pipeline has been
+built and independently verified.
 
 | Layer | What it does | File | Status |
 |---|---|---|---|
@@ -82,7 +84,7 @@ the pipeline underneath it has been built and independently verified.
 | Merge engine | Last-writer-wins per field, tombstones for delete | `node-graph-patch-lww-merge.js` | ✅ Phase 6 round 1 |
 | Live application | Merged result → the actual running editor, safely | `node-graph-patch-lww-live.js` | ✅ Phase 6 round 2 |
 | Transport | HTTP polling relay, broadcast + poll | `server.py`, `node-graph-patch-lww-transport.js` | ✅ Phase 6 round 3 |
-| Editor wiring | Slider/drag edits auto-broadcast; remote edits auto-apply | *(none yet)* | 🔲 not built |
+| Editor wiring | Slider drags auto-broadcast; remote edits auto-apply | `node-graph-patch-lww-editor-wiring.js` | ✅ Phase 6 round 4 (sliders only — see below) |
 
 **Why the merge is actually trustworthy, not just "seems to work":** the
 merge engine was tested against the three mathematical properties that
@@ -92,25 +94,25 @@ twice — commutative, associative, idempotent. All three verified directly.
 See [Phase 6](#-phase-6-an-actual-multiplayer-merge-engine) for the actual
 test results.
 
-**A shape you can try right now**, from a browser console with the app
-loaded (this *is* the real, tested API — nothing here is pseudocode):
+**Try it right now**, from a browser console with the app loaded — this is
+the real, tested, currently-shipping behavior, not pseudocode:
 
 ```js
-// Client A broadcasts an edit:
-await nodeGraphLwwBroadcastEdit("my-session", "osc1", "params.frequency", 880, Date.now(), "clientA");
+// Tab A joins a session, then just drags a slider like normal:
+startNodeGraphLwwMultiplayerSession("my-session");
+// ...drag any parameter slider in the UI — it broadcasts automatically.
 
-// Client B (a different tab/machine) picks it up and applies it:
-const { messages } = await nodeGraphLwwPollRemoteMessages("my-session", 0);
-const localDoc = nodeGraphLwwDocFromNodesRecord(JSON.parse(serializeNodeGraphPatch()).nodes, Date.now(), "clientB");
-const merged = nodeGraphLwwApplyRemoteMessages(localDoc, messages);
-nodeGraphLwwApplyMergedDocToLivePatch(merged);
+// Tab B (a different browser/machine) joins the same session and its
+// background poll picks up Tab A's edit within ~500ms, no further calls needed:
+startNodeGraphLwwMultiplayerSession("my-session");
 ```
 
 **What's honestly still missing:**
 
-- Nothing in the editor calls this automatically — dragging a slider today
-  doesn't broadcast anything. That's the next round if this is worth
-  continuing.
+- Only parameter sliders are wired — node position (drag-to-move) and node
+  create/delete don't broadcast yet.
+- No join/room UI — a session is started by calling
+  `startNodeGraphLwwMultiplayerSession(id)` directly; there's no button for it.
 - No presence (no "who else is editing this patch right now").
 - No reconnect/resume — a dropped connection loses its place in the poll
   sequence.
@@ -122,7 +124,8 @@ nodeGraphLwwApplyMergedDocToLivePatch(merged);
 Full details, including every test that was actually run, are in
 [Phase 6](#-phase-6-an-actual-multiplayer-merge-engine),
 [round 2](#-phase-6-round-2-applying-a-merge-to-the-live-app-without-crashing-it),
-and [round 3](#-phase-6-round-3-the-actual-network-hop) below.
+[round 3](#-phase-6-round-3-the-actual-network-hop),
+and [round 4](#-phase-6-round-4-wiring-it-to-real-slider-drags) below.
 
 ---
 
@@ -571,11 +574,65 @@ over an actual network round trip, not a single in-process function call
 pretending to be two clients.
 
 **What's still not here, on purpose:** no room/session-creation UI, no
-presence (who else is in this patch right now), no reconnect/resume logic,
-no live-editor wiring (still nothing calls this automatically when you drag
-a slider). Those are each their own round if this is worth continuing —
-this round's job was proving the wire actually carries the message
-correctly, which it does.
+presence (who else is in this patch right now), no reconnect/resume logic.
+Those are each their own round if this is worth continuing — round 3's job
+was proving the wire actually carries the message correctly, which it does.
+
+### 🔀 Phase 6, round 4: wiring it to real slider drags
+
+Round 4 closes the last item from round 3's "not built" list: dragging a
+parameter slider now actually broadcasts, and a background loop
+automatically applies whatever comes back — no manual API calls required.
+
+**The hook point (`node-graph-slider-dragging.js`):**
+`syncNodeGraphPatchParameterFromSlider` is what actually writes a slider's
+value into the patch on every `input` event — and notably it does **not**
+call `commitNodeGraphPatch` (that's Phase 4's expensive path; this function
+is the cheap one that runs on every drag tick). One line was added right
+after it writes the value: call `nodeGraphLwwNotifyLocalFieldEdit`, which is
+a no-op unless a multiplayer session is active. Off by default, and because
+it's gated at the top of that function, it adds no cost to the single-player
+path at all.
+
+**New file (`node-graph-patch-lww-editor-wiring.js`):** owns the session
+state (`nodeGraphLwwMultiplayer`), a `startNodeGraphLwwMultiplayerSession(id)`
+/ `stopNodeGraphLwwMultiplayerSession()` pair, and a `setInterval`-driven
+poll loop (500ms) that merges incoming messages into a running local doc and
+applies them via round 2's live-apply bridge. No join/room UI exists — a
+session is started by calling `startNodeGraphLwwMultiplayerSession` directly.
+That control is still "not built," same as before.
+
+**Verified, including a real bug caught in my own test methodology, not the
+code:** the first attempt to verify the background timer — broadcast a
+remote edit, wait, check the value — *appeared* to fail across several
+separate tool calls. Rather than assume the polling logic was broken,
+isolated it: ran the exact same broadcast-wait-check sequence as **one
+atomic script** instead of spread across several. It passed immediately.
+The real cause was the test's own methodology — the background timer keeps
+running between separate calls into the page, so checking state via
+multiple round-trips raced against timer ticks whose exact timing I didn't
+control. The atomic version removed that variable. Documenting this because
+"the test looked like it failed" and "the code has a bug" are different
+claims, and conflating them would have led to debugging the wrong thing.
+
+With that resolved, three things were confirmed directly:
+
+- **Zero behavior change when inactive:** dragged a slider with no session
+  started, intercepted `fetch` — confirmed no `/api/multiplayer/*` call was
+  made, and the value still wrote locally exactly as before this round.
+- **The real background timer, atomically verified:** started a session,
+  had a separate site broadcast a change, waited on the *actual*
+  `setInterval` (no manual poll call) — the value updated correctly in both
+  the in-memory patch and the live DOM slider.
+- **The real user-facing path:** dispatched a genuine DOM `input` event on
+  an actual slider element (not calling the broadcast function directly) —
+  confirmed the edit landed correctly on the server, exactly as another
+  client's poll would see it.
+
+**Still open:** node position (drag-to-move) and node create/delete aren't
+wired yet — only parameter sliders are. Timestamps are still plain
+wall-clock numbers (the clock-skew gap from round 1 is unresolved). No UI
+exists to start/stop a session or see who else is connected.
 
 ---
 
@@ -588,7 +645,7 @@ correctly, which it does.
 | 3 | Identify the actual hot path in normalize/rebuild | ✅ done — it's DOM rebuild, not normalize/rebuild: `applyNodeGraphPatchToDom` (~50%), `applyNodeGraphZoom` (~19%), `renderNodeGraphConnectionList` (~10%) |
 | 4 | Targeted fix for the hot path, re-measure | ⏸️ paused after round 4 — see write-up. Round 1: deferred heatmap in commit path (~113.6ms → ~91.4ms, ~20% faster). Round 2 & 3: correct fixes, honestly measured **no** speedup (layout was already forced earlier / read count wasn't the cost). Round 4: rAF-throttled the pan-drag handler — verified ~40x fewer forced-layout reads during a fast drag, zero precision loss, no geometry caching/staleness risk |
 | 5 | Reshape patch data toward stable-ID-keyed collections | 🟡 round 1 done: `nodes` now serializes keyed by id (was a positional array). Backward compatible (old array-format saves still load), round-trip verified byte-identical. The diff-friendliness claim was tested and **corrected** — see write-up. `connections`/`graphConnections`/`modulations` not yet reshaped (need a composite key, separate round) |
-| 6 | Build a real multiplayer merge engine | 🟡 round 1: standalone LWW merge engine, commutative/associative/idempotent verified directly. Round 2: bridged merged docs into the live app — found and fixed a real crash risk (deleting a connected node), verified against the actual DOM. Round 3: an actual HTTP polling transport (`server.py` + `node-graph-patch-lww-transport.js`) — verified end to end against a real running server, including a real browser DOM. Still missing: live-editor wiring (nothing calls this on a slider drag yet), presence/reconnect, a clock-skew-resistant timestamp source |
+| 6 | Build a real multiplayer merge engine | 🟡 round 1: standalone LWW merge engine, commutative/associative/idempotent verified directly. Round 2: bridged merged docs into the live app — found and fixed a real crash risk (deleting a connected node). Round 3: an actual HTTP polling transport — verified end to end against a real server. Round 4: wired real slider drags to auto-broadcast, and a background timer to auto-apply remote edits — zero cost when inactive, verified atomically after a false alarm in the test methodology itself (documented). Still missing: node position/create/delete wiring, presence/reconnect UI, a clock-skew-resistant timestamp source |
 
 This table is the honest state of things: a plan, not a changelog. Phase 1's
 own numbers reordered the plan — they pointed straight past JSON format and
