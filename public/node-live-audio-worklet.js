@@ -166,6 +166,7 @@ class NodeLiveAudioProcessor extends AudioWorkletProcessor {
     this.chordMemoryStates = new Map();
     this.turingMachineStates = new Map();
     this.pitchQuantizerStates = new Map();
+    this.chordSequencerStates = new Map();
     this.noiseGeneratorStates = new Map();
     this.oscResetStates = new Map();
     this.graphLfoStates = new Map();
@@ -640,6 +641,22 @@ class NodeLiveAudioProcessor extends AudioWorkletProcessor {
         });
         return;
       }
+      if (name === "chord_sequencer" || targetType === "chordSequencer") {
+        for (const state of this.chordSequencerStates.values()) {
+          this.destroyChordSequencerNativeState(state);
+        }
+        this.nativeChordSequencer = exports;
+        this.nativeChordSequencerReady = Boolean(
+          this.nativeChordSequencer?.soemdsp_chord_sequencer_create &&
+          this.nativeChordSequencer?.soemdsp_chord_sequencer_sample,
+        );
+        this.port.postMessage({
+          type: "nativeModuleStatus",
+          name: "chord_sequencer",
+          status: this.nativeChordSequencerReady ? "ready" : "missing exports",
+        });
+        return;
+      }
       if (name === "shooting_star_explosion" || targetType === "shootingStarExplosion") {
         this.nativeShootingStarExplosion = exports;
         this.nativeShootingStarExplosionReady = Boolean(
@@ -754,6 +771,7 @@ class NodeLiveAudioProcessor extends AudioWorkletProcessor {
     this.chordMemoryStates = new Map();
     this.turingMachineStates = new Map();
     this.pitchQuantizerStates = new Map();
+    this.chordSequencerStates = new Map();
     this.noiseGeneratorStates = new Map();
     this.oscResetStates = new Map();
     this.graphLfoStates = new Map();
@@ -997,6 +1015,9 @@ class NodeLiveAudioProcessor extends AudioWorkletProcessor {
       if (node?.type === "pitchQuantizer" && !this.pitchQuantizerStates.has(id)) {
         this.pitchQuantizerStates.set(id, this.createPitchQuantizerState());
       }
+      if (node?.type === "chordSequencer" && !this.chordSequencerStates.has(id)) {
+        this.chordSequencerStates.set(id, this.createChordSequencerState());
+      }
       if (node?.type === "passiveFilter" && !this.passiveFilterStates.has(id)) {
         this.passiveFilterStates.set(id, this.createPassiveFilterState());
       }
@@ -1192,6 +1213,12 @@ class NodeLiveAudioProcessor extends AudioWorkletProcessor {
       if (!ids.has(id)) {
         this.destroyPitchQuantizerNativeState(this.pitchQuantizerStates.get(id));
         this.pitchQuantizerStates.delete(id);
+      }
+    }
+    for (const id of [...this.chordSequencerStates.keys()]) {
+      if (!ids.has(id)) {
+        this.destroyChordSequencerNativeState(this.chordSequencerStates.get(id));
+        this.chordSequencerStates.delete(id);
       }
     }
     for (const id of [...this.passiveFilterStates.keys()]) {
@@ -3652,6 +3679,7 @@ class NodeLiveAudioProcessor extends AudioWorkletProcessor {
     runtime.chordMemoryStates = new Map();
     runtime.turingMachineStates = new Map();
     runtime.pitchQuantizerStates = new Map();
+    runtime.chordSequencerStates = new Map();
     runtime.stepSequencerStates = new Map();
     runtime.triggerCounterStates = new Map();
     runtime.triggerDividerStates = new Map();
@@ -3700,6 +3728,7 @@ class NodeLiveAudioProcessor extends AudioWorkletProcessor {
       if (node?.type === "chordMemory") this.chordMemoryStates.set(id, this.createChordMemoryState());
       if (node?.type === "turingMachine") this.turingMachineStates.set(id, this.createTuringMachineState());
       if (node?.type === "pitchQuantizer") this.pitchQuantizerStates.set(id, this.createPitchQuantizerState());
+      if (node?.type === "chordSequencer") this.chordSequencerStates.set(id, this.createChordSequencerState());
       if (node?.type === "passiveFilter") this.passiveFilterStates.set(id, this.createPassiveFilterState());
       if (node?.type === "cookbookFilter") this.cookbookFilterStates.set(id, this.createCookbookFilterState());
       if (node?.type === "ladderFilter") this.ladderFilterStates.set(id, this.createLadderFilterState());
@@ -6185,6 +6214,103 @@ class NodeLiveAudioProcessor extends AudioWorkletProcessor {
     return this.pitchQuantizerSampleJs(state, options);
   }
 
+  createChordSequencerState() {
+    return { clockWasHigh: false, resetWasHigh: false, stepIndex: 0, nativeHandle: 0 };
+  }
+
+  destroyChordSequencerNativeState(state) {
+    if (state?.nativeHandle && this.nativeChordSequencer?.soemdsp_chord_sequencer_destroy) {
+      this.nativeChordSequencer.soemdsp_chord_sequencer_destroy(state.nativeHandle);
+      state.nativeHandle = 0;
+    }
+  }
+
+  chordSequencerRotateLeft12(mask, amount) {
+    const n = ((amount % 12) + 12) % 12;
+    if (n === 0) return mask & 0xFFF;
+    return ((mask << n) | (mask >> (12 - n))) & 0xFFF;
+  }
+
+  chordSequencerSampleJs(state, options = {}) {
+    const progressions = [
+      [[0, 0], [7, 0], [9, 1], [5, 0]],
+      [[0, 0], [5, 0], [7, 0], [0, 0]],
+      [[2, 1], [7, 0], [0, 0], [0, 0]],
+      [[9, 1], [5, 0], [0, 0], [7, 0]],
+      [[0, 0], [9, 1], [5, 0], [7, 0]],
+      [[0, 0], [9, 1], [2, 1], [7, 0]],
+    ];
+    const majorTriadMask = 0x91;
+    const minorTriadMask = 0x89;
+    const clockHigh = Number(options.clock) > 0;
+    const resetHigh = Number(options.reset) > 0;
+    const progressionIndex = Math.max(0, Math.min(progressions.length - 1, Math.round(Number(options.progression) || 0)));
+    const level = Number(options.level) || 0;
+
+    if (resetHigh && !state.resetWasHigh) {
+      state.stepIndex = 0;
+    }
+    state.resetWasHigh = resetHigh;
+
+    if (clockHigh && !state.clockWasHigh) {
+      state.stepIndex = (state.stepIndex + 1) % progressions[progressionIndex].length;
+    }
+    state.clockWasHigh = clockHigh;
+
+    const [root, quality] = progressions[progressionIndex][state.stepIndex];
+    const baseMask = quality === 0 ? majorTriadMask : minorTriadMask;
+
+    return {
+      Scale: this.chordSequencerRotateLeft12(baseMask, root),
+      Root: (60 + root) / 120,
+      Gate: (clockHigh ? 1 : 0) * level,
+    };
+  }
+
+  chordSequencerSample(state, options = {}) {
+    if (
+      this.nativeChordSequencerReady &&
+      this.nativeChordSequencer?.soemdsp_chord_sequencer_create &&
+      this.nativeChordSequencer?.soemdsp_chord_sequencer_sample &&
+      this.nativeChordSequencer?.soemdsp_chord_sequencer_scale &&
+      this.nativeChordSequencer?.soemdsp_chord_sequencer_root
+    ) {
+      try {
+        if (!state.nativeHandle) {
+          state.nativeHandle = this.nativeChordSequencer.soemdsp_chord_sequencer_create();
+        }
+        if (state.nativeHandle) {
+          const clockHigh = Number(options.clock) > 0 ? 1 : 0;
+          const resetHigh = Number(options.reset) > 0 ? 1 : 0;
+          const progression = Math.max(0, Math.min(5, Math.round(Number(options.progression) || 0)));
+          const level = Number(options.level) || 0;
+          this.nativeChordSequencer.soemdsp_chord_sequencer_sample(
+            state.nativeHandle,
+            clockHigh,
+            resetHigh,
+            progression,
+          );
+          const scale = this.nativeChordSequencer.soemdsp_chord_sequencer_scale(state.nativeHandle, progression);
+          const root = this.nativeChordSequencer.soemdsp_chord_sequencer_root(state.nativeHandle, progression);
+          return {
+            Scale: scale,
+            Root: root,
+            Gate: clockHigh * level,
+          };
+        }
+      } catch (error) {
+        this.nativeChordSequencerReady = false;
+        this.port.postMessage({
+          type: "nativeModuleStatus",
+          name: "chord_sequencer",
+          status: "disabled",
+          message: String(error?.message || error || "native Chord Sequencer failed"),
+        });
+      }
+    }
+    return this.chordSequencerSampleJs(state, options);
+  }
+
   spiralWrap01(value) {
     return value - Math.floor(value);
   }
@@ -6955,6 +7081,16 @@ class NodeLiveAudioProcessor extends AudioWorkletProcessor {
             scaleInput: mixInput(nodeId, "Scale"),
           }),
         };
+      } else if (node?.type === "chordSequencer") {
+        const state = this.chordSequencerStates.get(nodeId) || this.createChordSequencerState();
+        this.chordSequencerStates.set(nodeId, state);
+        const read = (key, fallback) => this.readEffectiveParameter(node, key, fallback, frame, frames, frameValues);
+        value = this.chordSequencerSample(state, {
+          clock: mixInput(nodeId, "Clock"),
+          level: read("level", 1),
+          progression: read("progression", 0),
+          reset: mixInput(nodeId, "Reset"),
+        });
       } else if (node?.type === "midiOut") {
         const hasMidiInput = this.inputConnections.has(this.inputKey(nodeId, "MIDI Number"));
         const midiNumber = this.clampValue(Math.round(this.readEffectiveParameter(

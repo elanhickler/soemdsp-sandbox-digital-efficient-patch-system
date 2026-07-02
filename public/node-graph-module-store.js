@@ -378,9 +378,9 @@ const nodeGraphModuleStoreCatalog = Object.freeze({
   },
   chordSequencer: {
     category: "Sequence",
-    description: "Placeholder for arranging chord progressions and voicing changes inside the graph.",
-    label: "ChordSequencer",
-    notes: ["placeholder", "progressions", "voicing"],
+    description: "Steps through a built-in diatonic chord progression on each Clock. Scale outputs the current chord as a 12-bit pitch-class mask (feed it straight into Pitch Quantizer), Root outputs the chord's root as 0.1V/Oct.",
+    label: "Chord Sequencer",
+    notes: ["chord progression", "digital signal", "scale mask output", "root output"],
   },
   chordMemory: {
     category: "Sequence",

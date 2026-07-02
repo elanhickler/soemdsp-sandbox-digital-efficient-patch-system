@@ -2,6 +2,17 @@
   "ok": true,
   "modules": [
     {
+      "name": "chord_sequencer",
+      "label": "Chord Sequencer",
+      "targetType": "chordSequencer",
+      "kind": "pitch",
+      "source": "native_modules/chord_sequencer/chord_sequencer.cpp",
+      "sourceUrl": "https://github.com/soundemote/soemdsp-sandbox/blob/master/native_modules/chord_sequencer/chord_sequencer.cpp",
+      "wasm": "native_modules/chord_sequencer/chord_sequencer.wasm",
+      "wasmUrl": "native_modules/chord_sequencer/chord_sequencer.wasm",
+      "wasmAvailable": true
+    },
+    {
       "name": "chua_attractor",
       "label": "Chua Attractor",
       "targetType": "chuaAttractor",

@@ -308,3 +308,21 @@ if (!(Test-Path -LiteralPath $clang)) {
   "-Wl,--export-memory" `
   -o "$root\native_modules\chua_attractor\chua_attractor.wasm" `
   "$root\native_modules\chua_attractor\chua_attractor.cpp"
+
+& $clang `
+  --target=wasm32 `
+  -O3 `
+  -nostdlib `
+  -fno-exceptions `
+  -fno-rtti `
+  "-Wl,--no-entry" `
+  "-Wl,--export=soemdsp_chord_sequencer_create" `
+  "-Wl,--export=soemdsp_chord_sequencer_destroy" `
+  "-Wl,--export=soemdsp_chord_sequencer_sample" `
+  "-Wl,--export=soemdsp_chord_sequencer_scale" `
+  "-Wl,--export=soemdsp_chord_sequencer_root" `
+  "-Wl,--export=soemdsp_chord_sequencer_step" `
+  "-Wl,--export=soemdsp_chord_sequencer_version" `
+  "-Wl,--export-memory" `
+  -o "$root\native_modules\chord_sequencer\chord_sequencer.wasm" `
+  "$root\native_modules\chord_sequencer\chord_sequencer.cpp"

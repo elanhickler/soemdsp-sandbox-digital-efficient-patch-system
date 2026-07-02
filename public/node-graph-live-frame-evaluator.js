@@ -2926,6 +2926,16 @@ function evaluateNodeGraphPlanFrame(runtime, sampleRate, frame, frames) {
           scaleInput: mixInput(nodeId, "Scale"),
         }),
       };
+    } else if (node?.type === "chordSequencer") {
+      const state = runtime.chordSequencerStates.get(nodeId) || createNodeGraphChordSequencerState();
+      runtime.chordSequencerStates.set(nodeId, state);
+      const read = (key, fallback) => readNodeGraphLiveEffectiveParam(runtime, node, key, fallback, frame, frames, frameValues);
+      value = nodeGraphChordSequencerSample(state, {
+        clock: mixInput(nodeId, "Clock"),
+        level: read("level", 1),
+        progression: read("progression", 0),
+        reset: mixInput(nodeId, "Reset"),
+      });
     } else if (node?.type === "midiOut") {
       const midiInputKey = `${nodeId}.MIDI Number`;
       const hasMidiInput = runtime.inputConnections.has(midiInputKey);
