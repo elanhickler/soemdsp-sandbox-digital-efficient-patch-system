@@ -1,5 +1,7 @@
 <div align="center">
 
+# 🔥 Efficient Multiplayer Patch Editing 🔥
+
 # ⚙️ soemdsp-sandbox — Digital Efficient Patch System
 
 *A fork of [soemdsp-sandbox-digital-signals-audio](https://github.com/elanhickler/soemdsp-sandbox-digital-signals-audio),*
