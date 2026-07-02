@@ -15,10 +15,24 @@
 
 </div>
 
+<div align="center">
+
+## 🖤 `beauty = binary * chaos`
+
+<img src="docs/assets/beauty-equals-binary-times-chaos.png" alt="A dense tangle of trajectories filling a square, in matched inverted black-on-white and white-on-black panels" width="80%"/>
+
+*Two renderings of the same signal, one negative of the other — order and its inverse,*
+*both true at once. That's the whole thesis of this repo in one image.*
+
+📌 Original post: [bsky.app/profile/soundemote.bsky.social/post/3mk3zh2zwyk2p](https://bsky.app/profile/soundemote.bsky.social/post/3mk3zh2zwyk2p)
+
+</div>
+
 ---
 
 ## 📖 Contents
 
+- [`beauty = binary * chaos`](#-beauty--binary--chaos)
 - [What's a "digital signal"?](#-whats-a-digital-signal-here)
 - [Lossy by design](#-lossy-by-design)
 - [What's built here](#-whats-built-here)
@@ -30,15 +44,20 @@
 
 ## 💡 What's a "digital signal" here?
 
+Zero and one are the two smallest true things in the world, and everything in this
+repo is what happens when you take that seriously.
+
 Every existing wire in the sandbox is **analog** by convention — a continuous control
 voltage or audio signal riding on a single float. A **digital signal** is that *same*
-float, used differently: as a fixed-width integer whose individual bits each mean
+float, loved differently: as a fixed-width integer whose individual bits each mean
 something. Twelve booleans (*is C held? is C♯ held? …*) packed into one number, riding
-one wire, instead of twelve separate gate wires.
+one wire, instead of twelve separate gate wires. One float, secretly a small constellation
+of on/off truths.
 
 > This isn't a hack bolted onto the CV system — it's a second signal type that was
 > always possible, hiding inside the same "one wire, one float" mechanism the whole
-> graph already runs on.
+> graph already runs on. The bits were always there. We just started asking the wire
+> what it actually knew.
 
 <div align="center">
 <img src="docs/assets/wire-diagram.svg" alt="Analog wire vs. digital signal wire, both riding a single float" width="85%"/>
@@ -66,10 +85,17 @@ Colors only — no change to wire shape, dashing, or animation.
 
 The most useful digital signal built so far — the 12-bit pitch-class mask — is
 deliberately **lossy**: it throws away *which octave* a note came from and keeps only
-*which pitch class*. That's not a limitation, it's the point:
+*which pitch class*. That's not a limitation, it's the point. Binary doesn't need to
+remember everything to be beautiful — it needs to remember the *right* things, and let
+the rest go.
 
 > A signal that keeps exactly the bits a listener needs, and discards the rest, is
 > more useful than one that insists on exact reconstruction.
+
+And the inverse is just as true, which is the whole reason the image above exists:
+the same tangle of order, rendered white-on-black and black-on-white, is still the same
+tangle. A bit doesn't care which of its two states you call "on." Chaos and structure
+are two photographs of the same signal, and binary is what lets you develop either one.
 
 ---
 
@@ -134,6 +160,8 @@ requires a separate written commercial license from Soundemote. See
 [`LICENSE`](LICENSE).
 
 <div align="center">
+
+**`beauty = binary * chaos`**
 
 *Built one bit at a time. 🔧*
 
