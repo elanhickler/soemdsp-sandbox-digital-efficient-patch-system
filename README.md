@@ -27,7 +27,7 @@
 - [The layering this has to respect](#-the-layering-this-has-to-respect)
 - [The proof ladder](#-the-proof-ladder)
 - [Where serialized connections meet SIMD and video](#-where-serialized-connections-meet-simd-and-video)
-- [Diff-friendly online collaboration](#-the-same-shape-also-buys-diff-friendly-online-collaboration)
+- [Diff-friendly online collaboration (corrected)](#-the-same-shape-also-buys-diff-friendly-online-collaboration--with-a-correction)
 - [Plan of attack](#-plan-of-attack)
 - [Running it](#-running-it)
 - [License](#-license)
@@ -320,30 +320,46 @@ Neither of these is a reason to build SIMD or video support now. They're a
 reason not to paint the patch format into a corner that would make either one
 harder later.
 
-### 🤝 The same shape also buys diff-friendly online collaboration
+### 🤝 The same shape also buys diff-friendly online collaboration — with a correction
 
 There's a third reason to reach for stable IDs and flat structure, and it
 converges on the exact same shape as SIMD instead of pulling in a different
 direction:
 
-- **Arrays are diff-hostile.** Today's `nodes: [...]` / `graphConnections: [...]`
-  are positional — inserting one node shifts every array index after it, so a
-  naive diff sees "everything changed" instead of "one thing changed." Keying
-  those collections by stable ID (`{ [nodeId]: node }`) turns a diff into "this
-  one key changed" — which is both a clean collaboration diff *and* the
+- **Arrays are diff-hostile *at the structural level*.** Today's
+  `nodes: [...]` are positional; keying them by stable ID (`{ [nodeId]: node }`)
+  turns identity from "which array slot" into "which key" — the same
   stable-parameter-slot shape SIMD already wants.
 - **Structural edits and cosmetic/session state shouldn't merge as one unit.**
-  Two collaborators moving a slider and scrolling the view shouldn't be able
-  to collide with each other's actual graph edits. Keeping view/window state
-  (already mostly separate — `windows`, `view`, `cameras`) cleanly apart from
+  Keeping view/window state (`windows`, `view`, `cameras`) cleanly apart from
   graph structure (`nodes`, `connections`, `modulations`) means a future
-  merge/diff only has to reconcile the parts that are actually collaborative.
+  merge only has to reconcile the parts that are actually collaborative.
 
-This isn't a reason to build multiplayer now. It's a reason for Phase 5's
-"stable IDs and flat parameter arrays" reshape — which is already the plan —
-to be evaluated against *both* SIMD and diff/merge-friendliness at once,
-since one well-shaped format serves both instead of trading one off against
-the other.
+**Correction, from round 1's actual testing:** the original version of this
+section claimed keyed-by-id JSON "turns a diff into one changed key" as a
+plain diff/merge win. That claim was tested with real tools instead of
+assumed, and it does **not** hold for git's own tooling. Two experiments with
+`git merge-file` (a real 3-way text merge, not a guess):
+
+- **Non-overlapping concurrent edits** (one person edits an existing node's
+  param, another inserts a new node elsewhere): both the array shape and the
+  keyed shape merged cleanly, correctly, with **zero conflicts** — identical
+  outcome either way.
+- **A genuine conflict** (both people insert a *different* new node at the
+  *same* position): both shapes produced the **same conflict markers**,
+  because `git merge-file` diffs text lines, not JSON structure — it has no
+  concept of "these are two different object keys that could coexist."
+
+**The honest conclusion:** for git-based diffing/merging specifically, this
+reshape buys **nothing measurable** — git's line-based `diff3` already
+handles positional JSON arrays about as well as it handles keyed objects,
+for both the clean and the conflicting case. The real value of keyed-by-id
+is narrower than originally claimed: it's a prerequisite for a *future,
+purpose-built, JSON-aware merge/collaboration engine* (one that operates on
+the parsed object graph and can do a trivial key-union merge) — not a git
+diff/merge win today. SIMD-readiness remains the solid, independent reason
+for this reshape; the collaboration argument now rides on top of it rather
+than standing on its own.
 
 ---
 
@@ -355,7 +371,7 @@ the other.
 | 2 | Minify JSON output, measure the delta | ⏸️ deprioritized — Phase 1 showed parse/serialize is <1ms; not the bottleneck |
 | 3 | Identify the actual hot path in normalize/rebuild | ✅ done — it's DOM rebuild, not normalize/rebuild: `applyNodeGraphPatchToDom` (~50%), `applyNodeGraphZoom` (~19%), `renderNodeGraphConnectionList` (~10%) |
 | 4 | Targeted fix for the hot path, re-measure | ⏸️ paused after round 4 — see write-up. Round 1: deferred heatmap in commit path (~113.6ms → ~91.4ms, ~20% faster). Round 2 & 3: correct fixes, honestly measured **no** speedup (layout was already forced earlier / read count wasn't the cost). Round 4: rAF-throttled the pan-drag handler — verified ~40x fewer forced-layout reads during a fast drag, zero precision loss, no geometry caching/staleness risk |
-| 5 | Only if still warranted: reshape in-memory + serialized patch data toward stable-ID-keyed collections (serves SIMD *and* diff-friendly collaboration at once) | 🔲 not started |
+| 5 | Reshape patch data toward stable-ID-keyed collections | 🟡 round 1 done: `nodes` now serializes keyed by id (was a positional array). Backward compatible (old array-format saves still load), round-trip verified byte-identical. The diff-friendliness claim was tested and **corrected** — see write-up. `connections`/`graphConnections`/`modulations` not yet reshaped (need a composite key, separate round) |
 
 This table is the honest state of things: a plan, not a changelog. Phase 1's
 own numbers reordered the plan — they pointed straight past JSON format and

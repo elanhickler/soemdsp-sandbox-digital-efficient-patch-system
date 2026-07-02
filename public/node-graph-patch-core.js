@@ -405,9 +405,31 @@ function validateNodeGraphPatch(patch) {
   };
 }
 
+// Phase 5 (see README.md "Plan of attack"): saved patches key nodes by id
+// (an object, not an array) so a diff/merge only sees "this one node's key
+// changed" instead of "everything after this array index shifted". This
+// converter is the single point where that keyed-record shape gets turned
+// back into the plain array validateNodeGraphPatch (and everything
+// downstream of it) already expects -- no other file in the app needs to
+// know the on-disk shape changed. Still accepts a plain array too, so every
+// patch already committed to saved-patches/ keeps loading unchanged.
+function nodeGraphNodesRecordToArray(nodes) {
+  if (Array.isArray(nodes) || !nodes || typeof nodes !== "object") {
+    return nodes;
+  }
+  return Object.entries(nodes).map(([id, node]) => ({
+    ...node,
+    id: node?.id || id,
+  }));
+}
+
 function loadNodeGraphPatchFromScript(text) {
   try {
-    return validateNodeGraphPatch(JSON.parse(text));
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object") {
+      parsed.nodes = nodeGraphNodesRecordToArray(parsed.nodes);
+    }
+    return validateNodeGraphPatch(parsed);
   } catch (error) {
     if (error instanceof SyntaxError) {
       throw new Error(`script JSON parse failed: ${error.message}`);

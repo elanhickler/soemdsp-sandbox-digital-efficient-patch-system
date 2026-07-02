@@ -1,3 +1,18 @@
+// Counterpart to nodeGraphNodesRecordToArray (node-graph-patch-core.js):
+// serializes nodes keyed by id instead of as a positional array, so a
+// diff/merge on the saved file only sees the one node that actually changed.
+function nodeGraphNodesArrayToRecord(nodes = []) {
+  const record = {};
+  for (const node of Array.isArray(nodes) ? nodes : []) {
+    const id = String(node?.id || "").trim();
+    if (!id) {
+      continue;
+    }
+    record[id] = node;
+  }
+  return record;
+}
+
 function serializeNodeGraphPatch(patch = nodeGraphMvp.patch) {
   const cameraState = normalizeNodeGraphPatchCameras(patch.cameras, patch.activeCameraId);
   return JSON.stringify(
@@ -16,7 +31,7 @@ function serializeNodeGraphPatch(patch = nodeGraphMvp.patch) {
       info: normalizeNodeGraphPatchInfo(patch.info),
       modulations: patch.modulations || [],
       monitors: normalizeNodeGraphPatchMonitors(patch.monitors, patch),
-      nodes: patch.nodes,
+      nodes: nodeGraphNodesArrayToRecord(patch.nodes),
       requiredAssets: typeof nodeGraphRequiredAssetsForPatch === "function"
         ? nodeGraphRequiredAssetsForPatch(patch)
         : [],
