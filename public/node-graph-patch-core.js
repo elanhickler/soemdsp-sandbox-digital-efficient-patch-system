@@ -571,7 +571,13 @@ function applyNodeGraphPatchToDom() {
     renderNodeGraphCameraView();
   }
   syncNodeGraphHeaderTimingWidgets();
-  updateNodeGraphGridHeatmap();
+  // Deferred (was a synchronous updateNodeGraphGridHeatmap() call): the heatmap
+  // is a cosmetic glow/mask overlay that reads offsetWidth/offsetHeight per
+  // visible node, forcing a synchronous layout right after this function's own
+  // style writes above. scheduleNodeGraphGridHeatmapUpdate() (already used by
+  // the mouse-light path) defers that reflow to the next animation frame
+  // instead of blocking every single patch commit on it.
+  scheduleNodeGraphGridHeatmapUpdate();
   if (typeof scheduleNodeGraphModuleScopeDraw === "function") {
     scheduleNodeGraphModuleScopeDraw();
   }

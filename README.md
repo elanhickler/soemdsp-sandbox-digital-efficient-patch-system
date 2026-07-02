@@ -20,6 +20,7 @@
 
 - [Why this fork exists](#-why-this-fork-exists)
 - [The real bottleneck (it isn't file size)](#-the-real-bottleneck-it-isnt-file-size--measured-not-guessed)
+- [Phase 4, round 1: the heatmap fix](#-phase-4-round-1-the-heatmap-was-forcing-layout-on-every-edit)
 - [The layering this has to respect](#-the-layering-this-has-to-respect)
 - [The proof ladder](#-the-proof-ladder)
 - [Where serialized connections meet SIMD and video](#-where-serialized-connections-meet-simd-and-video)
@@ -88,6 +89,48 @@ shave sub-millisecond savings off a 110 ms edit. The actual target for Phase 3
 is now clear: **why does applying a 7-node patch to the DOM cost 57 ms, and
 does it need to fully rebuild rather than diff against what's already
 rendered?**
+
+### 🩹 Phase 4, round 1: the heatmap was forcing layout on every edit
+
+Breaking `applyNodeGraphPatchToDom` itself down further (same monkey-patch-and-time
+methodology, applied live in the running app) found two disproportionate costs
+inside it:
+
+| Sub-call inside `applyNodeGraphPatchToDom` | Median time |
+|---|---|
+| `applyNodeGraphWorkspaceView` | **~17 ms** |
+| `updateNodeGraphGridHeatmap` | **~13 ms** |
+| `renderNodeGraphCameraView` | ~7 ms |
+| everything else instrumented | < 2 ms |
+| *(remaining, the per-node update loop itself)* | ~39 ms |
+
+Root cause for `updateNodeGraphGridHeatmap`: it reads `node.offsetWidth` /
+`node.offsetHeight` and `getComputedStyle(...)` for every visible node —
+**right after** the per-node loop above it just finished writing CSS custom
+properties on those same nodes. That write-then-read sequence forces a
+synchronous browser layout (a well-known pattern called "layout thrashing")
+on every single patch commit, purely to redraw a cosmetic glow/mask overlay
+behind the nodes.
+
+The fix (`public/node-graph-patch-core.js`): swap the synchronous
+`updateNodeGraphGridHeatmap()` call for the already-existing
+`scheduleNodeGraphGridHeatmapUpdate()` — a one-line change that defers the
+heatmap repaint to the next animation frame instead of blocking the commit on
+it, exactly the same deferral pattern already used for wire redraws
+(`scheduleNodeGraphWireRedrawAfterLayout`) in the same function. No visual
+change — the glow still updates, just one frame later, which is
+imperceptible for a cosmetic overlay.
+
+**Result, same measurement methodology, same patch:** median full
+`commitNodeGraphPatch` dropped from **~113.6 ms to ~91.4 ms** — about **20%
+faster per edit**, from a single deferred call.
+
+`applyNodeGraphWorkspaceView`'s ~17 ms (it calls `getBoundingClientRect()` to
+clamp the workspace to the viewport) and the per-node loop's ~39 ms were left
+untouched this round — both are load-bearing for correct pan/zoom/node
+positioning, not purely cosmetic like the heatmap, and deferring or
+restructuring them safely needs its own proof rather than a same-day
+drive-by fix.
 
 ---
 
@@ -210,7 +253,7 @@ the other.
 | 1 | Profile real load/save/edit timings on today's format | ✅ done — see numbers above |
 | 2 | Minify JSON output, measure the delta | ⏸️ deprioritized — Phase 1 showed parse/serialize is <1ms; not the bottleneck |
 | 3 | Identify the actual hot path in normalize/rebuild | ✅ done — it's DOM rebuild, not normalize/rebuild: `applyNodeGraphPatchToDom` (~50%), `applyNodeGraphZoom` (~19%), `renderNodeGraphConnectionList` (~10%) |
-| 4 | Targeted fix for the hot path, re-measure | 🔲 not started — next up |
+| 4 | Targeted fix for the hot path, re-measure | 🟡 in progress — round 1 done: deferred heatmap repaint, ~113.6ms → ~91.4ms per edit (~20% faster). `applyNodeGraphWorkspaceView` (~17ms) and the per-node loop (~39ms) still open |
 | 5 | Only if still warranted: reshape in-memory + serialized patch data toward stable-ID-keyed collections (serves SIMD *and* diff-friendly collaboration at once) | 🔲 not started |
 
 This table is the honest state of things: a plan, not a changelog. Phase 1's
