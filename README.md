@@ -21,6 +21,7 @@
 - [Why this fork exists](#-why-this-fork-exists)
 - [The real bottleneck (it isn't file size)](#-the-real-bottleneck-it-isnt-file-size--measured-not-guessed)
 - [Phase 4, round 1: the heatmap fix](#-phase-4-round-1-the-heatmap-was-forcing-layout-on-every-edit)
+- [Phase 4, round 2: a correct fix that didn't help](#-phase-4-round-2-a-correct-fix-that-turned-out-not-to-matter-reported-honestly)
 - [The layering this has to respect](#-the-layering-this-has-to-respect)
 - [The proof ladder](#-the-proof-ladder)
 - [Where serialized connections meet SIMD and video](#-where-serialized-connections-meet-simd-and-video)
@@ -125,12 +126,37 @@ imperceptible for a cosmetic overlay.
 `commitNodeGraphPatch` dropped from **~113.6 ms to ~91.4 ms** — about **20%
 faster per edit**, from a single deferred call.
 
-`applyNodeGraphWorkspaceView`'s ~17 ms (it calls `getBoundingClientRect()` to
-clamp the workspace to the viewport) and the per-node loop's ~39 ms were left
-untouched this round — both are load-bearing for correct pan/zoom/node
-positioning, not purely cosmetic like the heatmap, and deferring or
-restructuring them safely needs its own proof rather than a same-day
-drive-by fix.
+`applyNodeGraphWorkspaceView`'s ~17 ms and the per-node loop's ~39 ms were
+left untouched this round.
+
+### 🩹 Phase 4, round 2: a correct fix that turned out not to matter (reported honestly)
+
+Digging into `applyNodeGraphWorkspaceView`'s ~17 ms found it was **not**
+`clampNodeGraphWorkspaceGridSizeToViewport` as the round-1 writeup guessed —
+it was all inside `applyNodeGraphPan()`, which it calls. And `applyNodeGraphPan`
+turned out to have the *exact same* synchronous `updateNodeGraphGridHeatmap()`
+call as round 1's fix, on a second, separate call path (it also runs on every
+live pan/zoom drag, not just on patch commit).
+
+Applied the identical fix: swapped it for `scheduleNodeGraphGridHeatmapUpdate()`.
+Same reasoning, same zero-visual-risk deferral, same pattern as round 1.
+
+**Then measured it honestly instead of assuming it worked**, isolating repeated
+`applyNodeGraphPan()` calls the way live dragging would exercise them
+(`git stash` to get a true before/after on just this file): baseline median
+**~17 ms**, after the fix **~20 ms** — no improvement, within noise, if
+anything slightly worse. The reason: `nodeGraphRenderedOriginOffset()`, called
+*earlier* in the same function, already calls `getBoundingClientRect()` on the
+workspace — so the forced layout was already paid before the heatmap read
+ever ran. Removing the heatmap's redundant read didn't remove the mandatory
+reflow, because it wasn't the one causing it.
+
+**The fix stayed in** — it's still strictly correct (one fewer redundant
+forced-layout trigger, no visual change, same win it already proved in the
+`commitNodeGraphPatch` path from round 1) — but it is **not** being credited
+with a speedup it didn't produce in this scenario. The real remaining cost
+for live pan/zoom is `nodeGraphRenderedOriginOffset`'s `getBoundingClientRect()`
+call, which is the actual candidate for round 3.
 
 ---
 
@@ -253,7 +279,7 @@ the other.
 | 1 | Profile real load/save/edit timings on today's format | ✅ done — see numbers above |
 | 2 | Minify JSON output, measure the delta | ⏸️ deprioritized — Phase 1 showed parse/serialize is <1ms; not the bottleneck |
 | 3 | Identify the actual hot path in normalize/rebuild | ✅ done — it's DOM rebuild, not normalize/rebuild: `applyNodeGraphPatchToDom` (~50%), `applyNodeGraphZoom` (~19%), `renderNodeGraphConnectionList` (~10%) |
-| 4 | Targeted fix for the hot path, re-measure | 🟡 in progress — round 1 done: deferred heatmap repaint, ~113.6ms → ~91.4ms per edit (~20% faster). `applyNodeGraphWorkspaceView` (~17ms) and the per-node loop (~39ms) still open |
+| 4 | Targeted fix for the hot path, re-measure | 🟡 in progress — round 1: deferred heatmap in commit path, ~113.6ms → ~91.4ms (~20% faster). Round 2: deferred the same call in the pan/zoom path (correct, kept, but measured **no** speedup there — real cost is `nodeGraphRenderedOriginOffset`'s `getBoundingClientRect()`, next up). Per-node loop (~39ms) still open |
 | 5 | Only if still warranted: reshape in-memory + serialized patch data toward stable-ID-keyed collections (serves SIMD *and* diff-friendly collaboration at once) | 🔲 not started |
 
 This table is the honest state of things: a plan, not a changelog. Phase 1's

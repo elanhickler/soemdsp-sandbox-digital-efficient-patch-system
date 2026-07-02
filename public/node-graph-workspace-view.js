@@ -12,7 +12,11 @@ function applyNodeGraphPan() {
   syncNodeGraphOriginMarker();
   syncNodeGraphWorldPositionReadout();
   syncNodeGraphModularViewSizeReadout();
-  updateNodeGraphGridHeatmap();
+  // Deferred for the same reason as the commitNodeGraphPatch call site: this is
+  // a cosmetic-only glow/mask repaint that reads node offsetWidth/offsetHeight,
+  // forcing a synchronous layout. applyNodeGraphPan runs on every pan/zoom/patch
+  // commit, so that forced layout was paid repeatedly for a purely visual effect.
+  scheduleNodeGraphGridHeatmapUpdate();
   drawNodeGraphWires();
   if (typeof scheduleNodeGraphModuleScopeDraw === "function") {
     scheduleNodeGraphModuleScopeDraw();
