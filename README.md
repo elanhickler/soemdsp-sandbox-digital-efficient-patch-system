@@ -19,10 +19,11 @@
 ## 📖 Contents
 
 - [Why this fork exists](#-why-this-fork-exists)
-- [The real bottleneck (probably isn't file size)](#-the-real-bottleneck-probably-isnt-file-size)
+- [The real bottleneck (it isn't file size)](#-the-real-bottleneck-it-isnt-file-size--measured-not-guessed)
 - [The layering this has to respect](#-the-layering-this-has-to-respect)
 - [The proof ladder](#-the-proof-ladder)
 - [Where serialized connections meet SIMD and video](#-where-serialized-connections-meet-simd-and-video)
+- [Diff-friendly online collaboration](#-the-same-shape-also-buys-diff-friendly-online-collaboration)
 - [Plan of attack](#-plan-of-attack)
 - [Running it](#-running-it)
 - [License](#-license)
@@ -175,6 +176,31 @@ Neither of these is a reason to build SIMD or video support now. They're a
 reason not to paint the patch format into a corner that would make either one
 harder later.
 
+### 🤝 The same shape also buys diff-friendly online collaboration
+
+There's a third reason to reach for stable IDs and flat structure, and it
+converges on the exact same shape as SIMD instead of pulling in a different
+direction:
+
+- **Arrays are diff-hostile.** Today's `nodes: [...]` / `graphConnections: [...]`
+  are positional — inserting one node shifts every array index after it, so a
+  naive diff sees "everything changed" instead of "one thing changed." Keying
+  those collections by stable ID (`{ [nodeId]: node }`) turns a diff into "this
+  one key changed" — which is both a clean collaboration diff *and* the
+  stable-parameter-slot shape SIMD already wants.
+- **Structural edits and cosmetic/session state shouldn't merge as one unit.**
+  Two collaborators moving a slider and scrolling the view shouldn't be able
+  to collide with each other's actual graph edits. Keeping view/window state
+  (already mostly separate — `windows`, `view`, `cameras`) cleanly apart from
+  graph structure (`nodes`, `connections`, `modulations`) means a future
+  merge/diff only has to reconcile the parts that are actually collaborative.
+
+This isn't a reason to build multiplayer now. It's a reason for Phase 5's
+"stable IDs and flat parameter arrays" reshape — which is already the plan —
+to be evaluated against *both* SIMD and diff/merge-friendliness at once,
+since one well-shaped format serves both instead of trading one off against
+the other.
+
 ---
 
 ## 🗺️ Plan of attack
@@ -185,7 +211,7 @@ harder later.
 | 2 | Minify JSON output, measure the delta | ⏸️ deprioritized — Phase 1 showed parse/serialize is <1ms; not the bottleneck |
 | 3 | Identify the actual hot path in normalize/rebuild | ✅ done — it's DOM rebuild, not normalize/rebuild: `applyNodeGraphPatchToDom` (~50%), `applyNodeGraphZoom` (~19%), `renderNodeGraphConnectionList` (~10%) |
 | 4 | Targeted fix for the hot path, re-measure | 🔲 not started — next up |
-| 5 | Only if still warranted: reshape in-memory patch data toward stable IDs / flat parameter arrays | 🔲 not started |
+| 5 | Only if still warranted: reshape in-memory + serialized patch data toward stable-ID-keyed collections (serves SIMD *and* diff-friendly collaboration at once) | 🔲 not started |
 
 This table is the honest state of things: a plan, not a changelog. Phase 1's
 own numbers reordered the plan — they pointed straight past JSON format and
