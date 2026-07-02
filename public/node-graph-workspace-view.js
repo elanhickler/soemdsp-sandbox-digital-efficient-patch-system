@@ -821,14 +821,28 @@ function nodeGraphWorkspaceTouchPanBlockSelector() {
   ].join(",");
 }
 
-function dragNodeGraphWorkspacePan(event) {
+// dragNodeGraphWorkspacePan runs on raw "pointermove" events, which modern
+// pointer devices can fire far more than once per animation frame (a 240Hz
+// mouse can send 4+ events per 16ms frame). Each call used to run
+// setNodeGraphPan -> applyNodeGraphPan synchronously, which forces a browser
+// layout read (see Phase 4 rounds 1-3 in README.md) -- so an uncapped drag
+// was paying that forced-layout cost multiple times per visible frame for no
+// visual benefit, since only the last position before paint is ever seen.
+// Coalescing to at most one applied position per animation frame caps that
+// to once per frame, matching what's actually visible, without caching or
+// assuming anything about the workspace's on-screen geometry.
+let nodeGraphWorkspacePanRafHandle = 0;
+let nodeGraphWorkspacePanPendingEvent = null;
+
+function flushNodeGraphWorkspacePanPendingEvent() {
   const drag = nodeGraphMvp.workspacePanning;
-  if (!drag || drag.pointerId !== event.pointerId) {
+  const pendingEvent = nodeGraphWorkspacePanPendingEvent;
+  nodeGraphWorkspacePanPendingEvent = null;
+  if (!drag || !pendingEvent) {
     return;
   }
-
-  const nextX = drag.startPanX + event.clientX - drag.startClientX;
-  const nextY = drag.startPanY + event.clientY - drag.startClientY;
+  const nextX = drag.startPanX + pendingEvent.clientX - drag.startClientX;
+  const nextY = drag.startPanY + pendingEvent.clientY - drag.startClientY;
   setNodeGraphPan(
     nodeGraphMvp.snapGridWhilePanning
       ? snapNodeGraphPanValueToGrid(nextX, nodeGraphGridWidth(), nodeGraphZoom(), { halfGrid: true })
@@ -837,14 +851,40 @@ function dragNodeGraphWorkspacePan(event) {
       ? snapNodeGraphPanValueToGrid(nextY, nodeGraphGridHeight(), nodeGraphZoom(), { halfGrid: true })
       : nextY,
   );
+}
+
+function dragNodeGraphWorkspacePan(event) {
+  const drag = nodeGraphMvp.workspacePanning;
+  if (!drag || drag.pointerId !== event.pointerId) {
+    return;
+  }
+
+  // preventDefault/stopPropagation must stay synchronous on every event (to
+  // reliably block default touch-scroll/selection behavior) -- only the
+  // expensive pan application below is deferred and coalesced.
   event.preventDefault();
   event.stopPropagation();
+
+  nodeGraphWorkspacePanPendingEvent = { clientX: event.clientX, clientY: event.clientY };
+  if (nodeGraphWorkspacePanRafHandle) {
+    return;
+  }
+  nodeGraphWorkspacePanRafHandle = window.requestAnimationFrame(() => {
+    nodeGraphWorkspacePanRafHandle = 0;
+    flushNodeGraphWorkspacePanPendingEvent();
+  });
 }
 
 function endNodeGraphWorkspacePan(event) {
   const drag = nodeGraphMvp.workspacePanning;
   if (!drag || drag.pointerId !== event.pointerId) {
     return;
+  }
+
+  if (nodeGraphWorkspacePanRafHandle) {
+    window.cancelAnimationFrame(nodeGraphWorkspacePanRafHandle);
+    nodeGraphWorkspacePanRafHandle = 0;
+    flushNodeGraphWorkspacePanPendingEvent();
   }
 
   const workspace = document.getElementById("nodeGraphWorkspace");

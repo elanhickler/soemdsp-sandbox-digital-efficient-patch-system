@@ -23,6 +23,7 @@
 - [Phase 4, round 1: the heatmap fix](#-phase-4-round-1-the-heatmap-was-forcing-layout-on-every-edit)
 - [Phase 4, round 2: a correct fix that didn't help](#-phase-4-round-2-a-correct-fix-that-turned-out-not-to-matter-reported-honestly)
 - [Phase 4, round 3: why the layer read count wasn't the cost](#-phase-4-round-3-a-real-finding-and-why-it-stops-here-for-now)
+- [Phase 4, round 4: throttling beat caching](#-phase-4-round-4-the-real-fix-wasnt-caching-it-was-throttling)
 - [The layering this has to respect](#-the-layering-this-has-to-respect)
 - [The proof ladder](#-the-proof-ladder)
 - [Where serialized connections meet SIMD and video](#-where-serialized-connections-meet-simd-and-video)
@@ -182,14 +183,55 @@ happens at all, synchronously, on a tick that just wrote styles.
 That's the real lever for a further win: **stop reading `getBoundingClientRect()`
 on every pan/zoom tick at all**, by caching the workspace's rect and border
 metrics across calls and only re-measuring when the workspace's actual
-geometry changes (a resize). That's a bigger, riskier change than rounds 1–3 —
-`ResizeObserver` catches *size* changes but not pure *position* shifts (e.g. a
-sidebar toggling, or the page scrolling), and this workspace rect feeds pixel-
-accurate mouse-to-graph coordinate math, so a stale cached position would show
-up as real, hard-to-notice pan/zoom drift rather than a crash. It deserves its
-own proof — checking every place the workspace can move without resizing —
-rather than a same-day fix on the back of round 3's smaller finding. Stopping
-Phase 4 here for now with that documented as the next real target.
+geometry changes (a resize). That's a bigger, riskier change — `ResizeObserver`
+catches *size* changes but not pure *position* shifts (e.g. a sidebar
+toggling, or the page scrolling), and this workspace rect feeds pixel-accurate
+mouse-to-graph coordinate math, so a stale cached position would show up as
+real, hard-to-notice pan/zoom drift rather than a crash. Checking every place
+the workspace can move without resizing turned out to have a cleaner
+alternative — see round 4.
+
+### 🩹 Phase 4, round 4: the real fix wasn't caching, it was throttling
+
+Before attempting the risky rect-caching approach, one thing was worth
+checking first: **how often does the code that reads this geometry actually
+run during a real drag?** `dragNodeGraphWorkspacePan` is bound directly to raw
+`pointermove` events with no throttling — and modern pointer devices can fire
+`pointermove` far more than once per animation frame (a 240 Hz mouse can send
+4+ events inside a single 16 ms frame). Every one of those was calling
+`setNodeGraphPan` → `applyNodeGraphPan()` synchronously, forcing the same
+layout read rounds 1–3 were built around, **multiple times per visible
+frame** — for positions that are never seen, since only the last one before
+paint actually gets drawn.
+
+That's a narrower, safer fix than caching the workspace's geometry at all:
+coalesce the pan-drag handler to **at most one applied position per animation
+frame**, using `requestAnimationFrame`. `preventDefault()`/`stopPropagation()`
+stay synchronous on every raw event (required to reliably block default
+touch-scroll behavior) — only the expensive `setNodeGraphPan` call is
+deferred and batched. On drag end, any pending frame is flushed immediately
+and synchronously, so the final position is always exact, never "one frame
+stale."
+
+This sidesteps the position-drift risk entirely — no geometry is cached
+across time, so there's nothing to go stale from a sidebar toggle or page
+scroll. It only changes *how often* the existing, already-correct pan
+calculation runs.
+
+**Verified, not assumed:** simulated a 40-event synchronous burst of
+`pointermove` calls (mimicking a high-poll-rate device sending many updates
+faster than the browser can paint) — **zero** `applyNodeGraphPan` calls
+during the burst (all deferred to the next frame), then **exactly one** call
+on drag-end to flush, landing at the *exact* expected final pixel position
+(`x: 200, y: 150`, matching the last event precisely — no drift). For a
+40-events-per-frame drag, that's roughly a 40x reduction in forced-layout
+reads during that stretch, with zero precision loss.
+
+This round is a clean stopping point for Phase 4: three of four rounds
+targeted "read less/read smarter" and returned honest nulls once the
+duplicate/redundant reads were gone; round 4 found the actual lever was
+"read less *often*," which is both the biggest win of the four and the
+lowest-risk to ship.
 
 ---
 
@@ -312,7 +354,7 @@ the other.
 | 1 | Profile real load/save/edit timings on today's format | ✅ done — see numbers above |
 | 2 | Minify JSON output, measure the delta | ⏸️ deprioritized — Phase 1 showed parse/serialize is <1ms; not the bottleneck |
 | 3 | Identify the actual hot path in normalize/rebuild | ✅ done — it's DOM rebuild, not normalize/rebuild: `applyNodeGraphPatchToDom` (~50%), `applyNodeGraphZoom` (~19%), `renderNodeGraphConnectionList` (~10%) |
-| 4 | Targeted fix for the hot path, re-measure | ⏸️ paused after round 3 — see write-up. Round 1: deferred heatmap in commit path (~113.6ms → ~91.4ms, ~20% faster). Round 2: same deferral in pan/zoom path (correct, no measured win — layout was already forced earlier). Round 3: merged two redundant `getBoundingClientRect()` reads into one (correct, still no measured win — the cost is *that a read happens*, not *how many*). Real fix (caching workspace rect, invalidated on resize) needs its own proof before attempting — deliberately not rushed |
+| 4 | Targeted fix for the hot path, re-measure | ⏸️ paused after round 4 — see write-up. Round 1: deferred heatmap in commit path (~113.6ms → ~91.4ms, ~20% faster). Round 2 & 3: correct fixes, honestly measured **no** speedup (layout was already forced earlier / read count wasn't the cost). Round 4: rAF-throttled the pan-drag handler — verified ~40x fewer forced-layout reads during a fast drag, zero precision loss, no geometry caching/staleness risk |
 | 5 | Only if still warranted: reshape in-memory + serialized patch data toward stable-ID-keyed collections (serves SIMD *and* diff-friendly collaboration at once) | 🔲 not started |
 
 This table is the honest state of things: a plan, not a changelog. Phase 1's
