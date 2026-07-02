@@ -16840,29 +16840,25 @@ def require_node_graph_mvp_contract() -> None:
 
 
 def require_readme_scheduler_contract() -> None:
-    # This fork's README was intentionally rewritten to document the digital
-    # signals work rather than preserve upstream's full CLAP host reference
-    # (that content still lives in docs/ and tools/webui-clap-host/README.md).
+    # This fork's README was intentionally rewritten to document the patch
+    # load/save/edit efficiency and SIMD-execution-graph work rather than
+    # preserve upstream's full CLAP host reference or the digital-signals
+    # fork's content (that content still lives in docs/ and in the
+    # digital-signals-audio fork's own README history).
     readme_source = (ROOT / "README.md").read_text(encoding="utf-8")
     readme_text = " ".join(readme_source.split())
     for snippet in [
-        "git clone https://github.com/elanhickler/soemdsp-sandbox-digital-signals-audio.git",
-        "cd soemdsp-sandbox-digital-signals-audio",
+        "git clone https://github.com/elanhickler/soemdsp-sandbox-digital-efficient-patch-system.git",
+        "cd soemdsp-sandbox-digital-efficient-patch-system",
         "python server.py",
         "http://127.0.0.1:8765",
         "python scripts\\smoke_test.py",
         "No package install needed.",
-        "digital signal",
-        "white wire",
-        "Turing Machine",
-        "Pitch Quantizer",
-        "Chord Memory",
-        "Henon Map",
-        "Chua Attractor",
-        "Logistic Map",
-        "Chord Sequencer",
-        "Lossy by design",
-        "2^53",
+        "SIMD",
+        "Circuit does not own concrete DSP objects.",
+        "in-memory graph-rebuild",
+        "proof ladder",
+        "Measure first. Optimize second.",
     ]:
         require(snippet in readme_text, f"README scheduler contract missing {snippet}")
 
