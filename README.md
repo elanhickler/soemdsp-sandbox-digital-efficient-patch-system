@@ -34,6 +34,7 @@ work tries not to obstruct it, but doesn't claim to deliver it.
 - [Where serialized connections meet SIMD and video](#-where-serialized-connections-meet-simd-and-video)
 - [Diff-friendly online collaboration (corrected)](#-the-same-shape-also-buys-diff-friendly-online-collaboration--with-a-correction)
 - [Phase 6: a real multiplayer merge engine](#-phase-6-an-actual-multiplayer-merge-engine)
+- [Phase 6, round 2: applying a merge live](#-phase-6-round-2-applying-a-merge-to-the-live-app-without-crashing-it)
 - [Plan of attack](#-plan-of-attack)
 - [Running it](#-running-it)
 - [License](#-license)
@@ -415,16 +416,12 @@ that "seems to work" in a quick manual test but isn't provably commutative
 will eventually let two clients silently disagree — that's why these were
 tested directly instead of just spot-checked.
 
-**What this round deliberately does NOT include, and why:**
+**What round 1 deliberately does NOT include, and why:**
 
 - **No networking/transport.** No websockets, no server-authority model, no
   presence. Building that before the merge math is proven would be
   inventing a scheduler before proving the data path — exactly the mistake
   this whole plan has been structured to avoid.
-- **No live-editor wiring.** `commitNodeGraphPatch` doesn't call into this
-  yet. It's a tested, standalone module — the next round, if there is one,
-  is wiring real edits to call `nodeGraphLwwApplyFieldEdit` and feeding
-  merged docs back through `nodeGraphLwwDocToNodesRecord`.
 - **`paramMeta` isn't tracked.** Only user-edited state (position, param
   values) goes through LWW; metadata isn't something two people "edit"
   concurrently in a meaningful sense.
@@ -433,6 +430,51 @@ tested directly instead of just spot-checked.
   source (a Lamport clock or server-assigned sequence number) before this
   is safe across machines with different system clocks. Noted honestly as
   an open gap, not silently assumed away.
+
+### 🔀 Phase 6, round 2: applying a merge to the live app, without crashing it
+
+Round 1 proved the merge *math*. It didn't prove the merge *result* could
+actually be applied to a running patch without breaking something — that's
+a different question, and a real one: a merged doc that deletes a node is
+easy to build in the abstract, but the live app has connections that point
+at node ids by reference.
+
+**A real gap, found by reading the code instead of assuming it's handled:**
+`validateNodeGraphPatch` (`node-graph-patch-core.js`) *throws* — not
+silently drops — when a connection references a node that no longer exists.
+So applying a merged doc that deletes a connected node would crash the
+entire commit, not just lose the connection quietly. This is exactly the
+kind of bug that stays invisible until the first time someone actually
+deletes a connected node during a merge.
+
+**The fix (`public/node-graph-patch-lww-live.js`, new):** a bridge function
+that reconstructs a full patch from a merged doc, carries over everything
+the LWW engine doesn't track (`paramMeta`, view/window/camera state — all
+untouched from the currently open patch), and filters `connections` /
+`graphConnections` down to only the ones whose endpoints both survived the
+merge, *before* handing the result to the same `commitNodeGraphPatch` every
+other edit in the app already goes through.
+
+**Verified against the real running app, not just pure data:**
+
+- Loaded an actual 7-node demo patch, simulated a remote collaborator
+  deleting a node that had 2 live connections. Before the fix's filtering
+  logic, this would throw. After: **no exception**, the node's exact 2
+  connections were dropped (5 → 3, matching precisely), and — checked
+  directly against the DOM, not just the in-memory patch — **the node's
+  actual rendered element was gone from the page.**
+- Two concurrent field edits on the *same* node (a remote param change, a
+  local position change) both landed correctly: verified in the in-memory
+  patch **and** by reading the live parameter slider's actual DOM value,
+  confirming the merge propagates all the way through
+  `applyNodeGraphPatchToDom` to what a user would actually see.
+
+This closes the loop: pure merge (round 1) → correctly applying a merge
+result to a live patch without crashing on stale references (round 2). The
+only missing piece before this could support real multiplayer is a
+transport to carry merged docs between two actual browser sessions —
+deliberately still not attempted, for the same reason round 1 didn't
+attempt it.
 
 ---
 
@@ -445,7 +487,7 @@ tested directly instead of just spot-checked.
 | 3 | Identify the actual hot path in normalize/rebuild | ✅ done — it's DOM rebuild, not normalize/rebuild: `applyNodeGraphPatchToDom` (~50%), `applyNodeGraphZoom` (~19%), `renderNodeGraphConnectionList` (~10%) |
 | 4 | Targeted fix for the hot path, re-measure | ⏸️ paused after round 4 — see write-up. Round 1: deferred heatmap in commit path (~113.6ms → ~91.4ms, ~20% faster). Round 2 & 3: correct fixes, honestly measured **no** speedup (layout was already forced earlier / read count wasn't the cost). Round 4: rAF-throttled the pan-drag handler — verified ~40x fewer forced-layout reads during a fast drag, zero precision loss, no geometry caching/staleness risk |
 | 5 | Reshape patch data toward stable-ID-keyed collections | 🟡 round 1 done: `nodes` now serializes keyed by id (was a positional array). Backward compatible (old array-format saves still load), round-trip verified byte-identical. The diff-friendliness claim was tested and **corrected** — see write-up. `connections`/`graphConnections`/`modulations` not yet reshaped (need a composite key, separate round) |
-| 6 | Build a real multiplayer merge engine | 🟡 round 1 done: standalone LWW merge engine (`node-graph-patch-lww-merge.js`), commutative/associative/idempotent all verified directly, not assumed. Not yet wired to the live editor or any transport — that's deliberately a separate round. Timestamp source (wall-clock vs. logical clock) is an open, documented gap |
+| 6 | Build a real multiplayer merge engine | 🟡 round 1: standalone LWW merge engine (`node-graph-patch-lww-merge.js`), commutative/associative/idempotent verified directly. Round 2: bridged merged docs into the live app (`node-graph-patch-lww-live.js`) — found and fixed a real crash risk (deleting a connected node), verified against the actual DOM, not just data. Still no networking/transport — deliberately the next, separate round. Timestamp source (wall-clock vs. logical clock) is an open, documented gap |
 
 This table is the honest state of things: a plan, not a changelog. Phase 1's
 own numbers reordered the plan — they pointed straight past JSON format and
