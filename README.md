@@ -52,20 +52,41 @@ So this fork's actual mission is two-layered:
 
 ---
 
-## 🔍 The real bottleneck (probably isn't file size)
+## 🔍 The real bottleneck (it isn't file size — measured, not guessed)
 
-Before touching any serialization format, the plan is to actually measure:
+Before touching any serialization format, Phase 1 measured the actual pipeline
+live in the browser, timing every stage of loading and committing the largest
+demo patch (`lorenz-demonstration`, 17.6 KB, 7 nodes) with `performance.now()`,
+median of 200 runs per stage:
 
-- Time spent in `node-graph-patch-serialization.js` (parse/stringify) vs.
-- Time spent in `node-graph-patch-normalizers.js` (validating and filling in
-  every node/port/connection) vs.
-- Time spent rebuilding the execution plan (`node-graph-execution-plan.js`) and
-  re-hydrating every module's live state (the same 8-touch-point state-map
-  pattern used for every stateful module today).
+| Stage | Median time |
+|---|---|
+| `JSON.parse` | **~0.0 ms** |
+| `validateNodeGraphPatch` | **~0.1 ms** |
+| `compileNodeGraphExecutionPlan` | **~0.1 ms** |
+| `serializeNodeGraphPatch` | **~0.0 ms** |
+| **Full `commitNodeGraphPatch` (one edit)** | **~110 ms** |
 
-Whichever of those dominates is where the real win lives. Changing JSON→binary
-without that measurement first would be optimizing the part of the pipeline
-that was never slow.
+Parsing, validating, compiling the execution plan, and serializing back to
+JSON are all effectively free — **under half a millisecond combined.** The
+110 ms is coming from somewhere else entirely. Breaking `commitNodeGraphPatch`
+down into its actual sub-calls (same methodology) found it:
+
+| Sub-call inside `commitNodeGraphPatch` | Median time | Share |
+|---|---|---|
+| `applyNodeGraphPatchToDom` | **~57 ms** | ~50% |
+| `applyNodeGraphZoom` | **~21 ms** | ~19% |
+| `renderNodeGraphConnectionList` | **~11 ms** | ~10% |
+| `syncNodeGraphMonitorIndicators` | ~5 ms | ~5% |
+| everything else (validate, clone, runtime sync, palette, ghost sliders, filter curves, visual settings, settings view) | **< 1 ms total** | ~1% |
+
+**Finding: this was never a serialization problem.** It's a DOM-rebuild
+problem — `applyNodeGraphPatchToDom` alone is ~500x slower than parsing the
+entire patch file. Any compression/binary-format work on the *file* would
+shave sub-millisecond savings off a 110 ms edit. The actual target for Phase 3
+is now clear: **why does applying a 7-node patch to the DOM cost 57 ms, and
+does it need to fully rebuild rather than diff against what's already
+rendered?**
 
 ---
 
@@ -160,14 +181,16 @@ harder later.
 
 | Phase | Goal | Status |
 |---|---|---|
-| 1 | Profile real load/save/edit timings on today's format | 🔲 not started |
-| 2 | Minify JSON output, measure the delta | 🔲 not started |
-| 3 | Identify the actual hot path in normalize/rebuild | 🔲 not started |
-| 4 | Targeted fix for the hot path, re-measure | 🔲 not started |
+| 1 | Profile real load/save/edit timings on today's format | ✅ done — see numbers above |
+| 2 | Minify JSON output, measure the delta | ⏸️ deprioritized — Phase 1 showed parse/serialize is <1ms; not the bottleneck |
+| 3 | Identify the actual hot path in normalize/rebuild | ✅ done — it's DOM rebuild, not normalize/rebuild: `applyNodeGraphPatchToDom` (~50%), `applyNodeGraphZoom` (~19%), `renderNodeGraphConnectionList` (~10%) |
+| 4 | Targeted fix for the hot path, re-measure | 🔲 not started — next up |
 | 5 | Only if still warranted: reshape in-memory patch data toward stable IDs / flat parameter arrays | 🔲 not started |
 
-This table is the honest state of things: a plan, not a changelog. Nothing
-below Phase 1 gets built until Phase 1 produces numbers.
+This table is the honest state of things: a plan, not a changelog. Phase 1's
+own numbers reordered the plan — they pointed straight past JSON format and
+straight at DOM rebuild cost, so Phase 2 (minify) is parked and Phase 3
+(find the hot path) is already answered by the same measurement pass.
 
 ---
 
