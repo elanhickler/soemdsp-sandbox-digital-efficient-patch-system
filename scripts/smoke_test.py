@@ -120,6 +120,7 @@ PUBLIC_SCRIPT_PATHS = (
     "./public/node-graph-patch-runtime.js",
     "./public/node-graph-code-screen-model.js",
     "./public/node-graph-patch-serialization.js",
+    "./public/node-graph-patch-lww-merge.js",
     "./public/node-graph-settings-fields.js",
     "./public/node-graph-settings-view.js",
     "./public/node-graph-settings-text-fit.js",

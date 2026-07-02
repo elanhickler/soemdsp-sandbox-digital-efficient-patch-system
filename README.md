@@ -4,13 +4,18 @@
 
 *A fork of [soemdsp-sandbox-digital-signals-audio](https://github.com/elanhickler/soemdsp-sandbox-digital-signals-audio),*
 *narrowing focus to one question:*
-**how fast can loading, saving, and editing a patch be — and what does the graph have to look like underneath to eventually run on SIMD lanes?**
+**how fast can loading, saving, and editing a patch be — and can multiple people edit the same one safely?**
+
+This fork's mandate is the patch system specifically: load/save/edit speed
+and the data model that supports it, including real multiplayer editing.
+SIMD-readiness for the audio DSP engine is a separate agent's scope — this
+work tries not to obstruct it, but doesn't claim to deliver it.
 
 [![License: Noncommercial](https://img.shields.io/badge/license-noncommercial-blue.svg)](LICENSE)
 [![Language: C++/WASM](https://img.shields.io/badge/native-C%2B%2B%20%E2%86%92%20WASM-654ff0.svg)](native_modules)
 [![Runtime: Vanilla JS](https://img.shields.io/badge/runtime-vanilla%20JS-f7df1e.svg)](public)
 [![Status: Investigating](https://img.shields.io/badge/status-investigating-orange.svg)](#)
-[![Goal: SIMD-ready](https://img.shields.io/badge/goal-SIMD--ready-654ff0.svg)](#)
+[![Goal: Multiplayer-ready](https://img.shields.io/badge/goal-multiplayer--ready-654ff0.svg)](#)
 
 </div>
 
@@ -28,6 +33,7 @@
 - [The proof ladder](#-the-proof-ladder)
 - [Where serialized connections meet SIMD and video](#-where-serialized-connections-meet-simd-and-video)
 - [Diff-friendly online collaboration (corrected)](#-the-same-shape-also-buys-diff-friendly-online-collaboration--with-a-correction)
+- [Phase 6: a real multiplayer merge engine](#-phase-6-an-actual-multiplayer-merge-engine)
 - [Plan of attack](#-plan-of-attack)
 - [Running it](#-running-it)
 - [License](#-license)
@@ -357,9 +363,76 @@ for both the clean and the conflicting case. The real value of keyed-by-id
 is narrower than originally claimed: it's a prerequisite for a *future,
 purpose-built, JSON-aware merge/collaboration engine* (one that operates on
 the parsed object graph and can do a trivial key-union merge) — not a git
-diff/merge win today. SIMD-readiness remains the solid, independent reason
-for this reshape; the collaboration argument now rides on top of it rather
-than standing on its own.
+diff/merge win today. That collaboration-engine prerequisite is this fork's
+actual mandate (see Phase 6 below); SIMD-readiness is a separate agent's
+scope, not something this patch-system work is responsible for delivering —
+this reshape simply tries not to obstruct it.
+
+---
+
+## 🔀 Phase 6: an actual multiplayer merge engine
+
+This fork's mandate: the patch system, not SIMD. That includes making the
+system safe for multiple people editing the same patch at once — a real,
+scoped goal in its own right, separate from anything DSP/SIMD-related.
+
+**What's built (`public/node-graph-patch-lww-merge.js`):** a standalone,
+pure last-writer-wins (LWW) merge engine, built and rigorously verified in
+isolation, before touching the live editor, `commitNodeGraphPatch`, or any
+networking — same "prove the data path before the transport" discipline as
+everywhere else in this plan.
+
+- Each node's position (`gx`/`gy`) and each `params.*` entry is tracked as
+  an independent field (`nodeId + fieldPath` as its key), stamped with an
+  `updatedAt` timestamp and a `siteId`. Two people editing *different*
+  fields on the same node both survive a merge — nothing gets clobbered.
+- Node existence is tracked separately via tombstones (`{ deleted, updatedAt,
+  siteId }`), so deletion has its own LWW resolution independent of field
+  edits — a stale field edit from before a delete doesn't resurrect the node.
+- Conflicting edits to the *same* field resolve deterministically: higher
+  timestamp wins; an exact-tie timestamp falls back to comparing `siteId`,
+  so the outcome never depends on which order the merge happens to run in.
+
+**Verified, not assumed — the actual CRDT correctness properties, tested
+directly:**
+
+| Property | What it guarantees | Verified |
+|---|---|---|
+| Commutative | `merge(A, B) === merge(B, A)` | ✅ |
+| Associative | `merge(merge(A,B), C) === merge(A, merge(B,C))` | ✅ |
+| Idempotent | `merge(A, A) === A` | ✅ |
+| Non-overlapping edits | Both survive, neither clobbers the other | ✅ |
+| Same-field conflict | Higher timestamp wins, deterministically | ✅ |
+| Delete vs. stale edit | Delete correctly wins over an earlier edit | ✅ |
+| Field edit after delete | Does not resurrect the node (tombstones govern existence) | ✅ |
+| Round trip through Phase 5's keyed format | Exact match on a real 7-node patch | ✅ |
+
+These three properties (commutative/associative/idempotent) are what
+actually matter for a network merge engine: they're what guarantee every
+collaborator converges on the identical result regardless of what order
+messages arrive in, or whether one gets delivered twice. A merge function
+that "seems to work" in a quick manual test but isn't provably commutative
+will eventually let two clients silently disagree — that's why these were
+tested directly instead of just spot-checked.
+
+**What this round deliberately does NOT include, and why:**
+
+- **No networking/transport.** No websockets, no server-authority model, no
+  presence. Building that before the merge math is proven would be
+  inventing a scheduler before proving the data path — exactly the mistake
+  this whole plan has been structured to avoid.
+- **No live-editor wiring.** `commitNodeGraphPatch` doesn't call into this
+  yet. It's a tested, standalone module — the next round, if there is one,
+  is wiring real edits to call `nodeGraphLwwApplyFieldEdit` and feeding
+  merged docs back through `nodeGraphLwwDocToNodesRecord`.
+- **`paramMeta` isn't tracked.** Only user-edited state (position, param
+  values) goes through LWW; metadata isn't something two people "edit"
+  concurrently in a meaningful sense.
+- **Wall-clock timestamps, not a logical clock.** `updatedAt` as used in
+  testing is a plain number — real usage needs a clock-skew-resistant
+  source (a Lamport clock or server-assigned sequence number) before this
+  is safe across machines with different system clocks. Noted honestly as
+  an open gap, not silently assumed away.
 
 ---
 
@@ -372,6 +445,7 @@ than standing on its own.
 | 3 | Identify the actual hot path in normalize/rebuild | ✅ done — it's DOM rebuild, not normalize/rebuild: `applyNodeGraphPatchToDom` (~50%), `applyNodeGraphZoom` (~19%), `renderNodeGraphConnectionList` (~10%) |
 | 4 | Targeted fix for the hot path, re-measure | ⏸️ paused after round 4 — see write-up. Round 1: deferred heatmap in commit path (~113.6ms → ~91.4ms, ~20% faster). Round 2 & 3: correct fixes, honestly measured **no** speedup (layout was already forced earlier / read count wasn't the cost). Round 4: rAF-throttled the pan-drag handler — verified ~40x fewer forced-layout reads during a fast drag, zero precision loss, no geometry caching/staleness risk |
 | 5 | Reshape patch data toward stable-ID-keyed collections | 🟡 round 1 done: `nodes` now serializes keyed by id (was a positional array). Backward compatible (old array-format saves still load), round-trip verified byte-identical. The diff-friendliness claim was tested and **corrected** — see write-up. `connections`/`graphConnections`/`modulations` not yet reshaped (need a composite key, separate round) |
+| 6 | Build a real multiplayer merge engine | 🟡 round 1 done: standalone LWW merge engine (`node-graph-patch-lww-merge.js`), commutative/associative/idempotent all verified directly, not assumed. Not yet wired to the live editor or any transport — that's deliberately a separate round. Timestamp source (wall-clock vs. logical clock) is an open, documented gap |
 
 This table is the honest state of things: a plan, not a changelog. Phase 1's
 own numbers reordered the plan — they pointed straight past JSON format and
