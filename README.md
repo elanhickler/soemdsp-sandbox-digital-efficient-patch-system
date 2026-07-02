@@ -24,6 +24,7 @@ work tries not to obstruct it, but doesn't claim to deliver it.
 ## 📖 Contents
 
 - [Why this fork exists](#-why-this-fork-exists)
+- [Online collaboration & multiplayer — current state](#-online-collaboration--multiplayer--current-state)
 - [The real bottleneck (it isn't file size)](#-the-real-bottleneck-it-isnt-file-size--measured-not-guessed)
 - [Phase 4, round 1: the heatmap fix](#-phase-4-round-1-the-heatmap-was-forcing-layout-on-every-edit)
 - [Phase 4, round 2: a correct fix that didn't help](#-phase-4-round-2-a-correct-fix-that-turned-out-not-to-matter-reported-honestly)
@@ -59,9 +60,67 @@ So this fork's actual mission is two-layered:
 
 1. **Short term:** profile and speed up the in-memory graph-rebuild step — the
    part that runs on every load, save, and edit, regardless of file format.
-2. **Long term:** shape the graph's data model so that speeding it up further
-   later (SIMD, block processing, a real scheduler) is a natural next step
-   instead of a rewrite.
+2. **Long term:** shape the graph's data model so it holds up under real
+   multiplayer editing — stable node identity, a merge engine that actually
+   converges, a transport to carry changes between sessions.
+
+---
+
+## 🤝 Online collaboration & multiplayer — current state
+
+**Short version: two people can edit the same patch, on two different
+machines, and both sets of changes land correctly — proven with a real
+merge engine talking over a real network hop, not assumed.** This isn't
+wired into the editor's UI yet (see "not built" below), but every piece of
+the pipeline underneath it has been built and independently verified.
+
+| Layer | What it does | File | Status |
+|---|---|---|---|
+| Data shape | Nodes keyed by stable id, not array position | `node-graph-patch-serialization.js` / `node-graph-patch-core.js` | ✅ Phase 5 |
+| Merge engine | Last-writer-wins per field, tombstones for delete | `node-graph-patch-lww-merge.js` | ✅ Phase 6 round 1 |
+| Live application | Merged result → the actual running editor, safely | `node-graph-patch-lww-live.js` | ✅ Phase 6 round 2 |
+| Transport | HTTP polling relay, broadcast + poll | `server.py`, `node-graph-patch-lww-transport.js` | ✅ Phase 6 round 3 |
+| Editor wiring | Slider/drag edits auto-broadcast; remote edits auto-apply | *(none yet)* | 🔲 not built |
+
+**Why the merge is actually trustworthy, not just "seems to work":** the
+merge engine was tested against the three mathematical properties that
+guarantee two people's editors converge on an identical result no matter
+what order network messages arrive in, or whether one gets delivered
+twice — commutative, associative, idempotent. All three verified directly.
+See [Phase 6](#-phase-6-an-actual-multiplayer-merge-engine) for the actual
+test results.
+
+**A shape you can try right now**, from a browser console with the app
+loaded (this *is* the real, tested API — nothing here is pseudocode):
+
+```js
+// Client A broadcasts an edit:
+await nodeGraphLwwBroadcastEdit("my-session", "osc1", "params.frequency", 880, Date.now(), "clientA");
+
+// Client B (a different tab/machine) picks it up and applies it:
+const { messages } = await nodeGraphLwwPollRemoteMessages("my-session", 0);
+const localDoc = nodeGraphLwwDocFromNodesRecord(JSON.parse(serializeNodeGraphPatch()).nodes, Date.now(), "clientB");
+const merged = nodeGraphLwwApplyRemoteMessages(localDoc, messages);
+nodeGraphLwwApplyMergedDocToLivePatch(merged);
+```
+
+**What's honestly still missing:**
+
+- Nothing in the editor calls this automatically — dragging a slider today
+  doesn't broadcast anything. That's the next round if this is worth
+  continuing.
+- No presence (no "who else is editing this patch right now").
+- No reconnect/resume — a dropped connection loses its place in the poll
+  sequence.
+- Timestamps are plain wall-clock numbers — safe on one machine, not yet
+  safe across machines with different system clocks (needs a logical clock).
+- The transport is a proof-scale in-memory relay (`server.py`), not
+  production infrastructure — sessions vanish on server restart.
+
+Full details, including every test that was actually run, are in
+[Phase 6](#-phase-6-an-actual-multiplayer-merge-engine),
+[round 2](#-phase-6-round-2-applying-a-merge-to-the-live-app-without-crashing-it),
+and [round 3](#-phase-6-round-3-the-actual-network-hop) below.
 
 ---
 
