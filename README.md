@@ -1,145 +1,101 @@
-# soemdsp-sandbox
+# soemdsp-sandbox — Digital Signals
 
-## Live Demo: http://soundemote.io/sandbox
+A fork of [soemdsp-sandbox](https://github.com/soundemote/soemdsp-sandbox) exploring
+a simple idea: **every wire in this patcher already carries one JavaScript
+float. What if some of them carried bits instead of a voltage?**
 
-Browser sandbox for trying `soemdsp` patching, generated artifacts, waveform
-views, Render Sample, and Live Audio.
+## What's a "digital signal" here?
 
-## License
+Every existing wire in the sandbox is analog by convention — a continuous
+control voltage or audio signal riding on a single float. A **digital
+signal** is the same float used differently: as a fixed-width integer, whose
+bits each mean something on their own. Twelve booleans (is C held? is C#
+held? ...) packed into one number, riding one wire, instead of twelve
+separate gate wires.
 
-This repository is source-available for noncommercial use only. Commercial use
-requires a separate written commercial license from Soundemote. See
-[`LICENSE`](LICENSE).
+This isn't a hack bolted onto the CV system — it's a second signal type that
+was always possible, hiding inside the same "one wire, one float" mechanism
+the whole graph already runs on.
+
+**The math behind it:** a JS double safely represents integers up to
+`2^53 - 1` before precision loss (`Number.MAX_SAFE_INTEGER`). That's **53
+independent bits available on a single wire** — 9,007,199,254,740,992
+possible states. The modules below use 12 of those 53 bits (pitch-class
+membership). There's room for 41 more.
+
+Digital signals get a **white wire** in the graph, visually distinct from
+the usual role-colored analog wires (cyan input, amber output, purple
+modulation). Colors only — no change to wire shape, dashing, or animation.
+
+## Lossy by design
+
+The most useful digital signal built so far — the 12-bit pitch-class mask —
+is deliberately **lossy**: it throws away *which octave* a note came from
+and keeps only *which pitch class*. That's not a limitation, it's the
+point. A signal that keeps exactly the bits a listener needs and discards
+the rest is more useful than one that insists on exact reconstruction.
+
+## What's built here
+
+- **Turing Machine** — classic mutating shift-register sequencer. Each
+  clock edge shifts its register and randomly flips the new bit with a set
+  probability, producing evolving, semi-repeating loops. Exposes its low 12
+  bits as a `Scale` output — a digital signal any pitch-aware module can
+  read.
+- **Pitch Quantizer** — snaps a `0.1V/Oct` pitch signal to the nearest note
+  in a scale. Pick a preset (Chromatic, Major, Minor, Major/Minor
+  Pentatonic, Whole Tone) or feed it a `Scale` mask directly from Turing
+  Machine — same bit convention, no adapter needed.
+- **Chord Memory** — latches up to four notes from a single mono pitch
+  source, one at a time, via a `Latch` trigger. Outputs them stacked or
+  arpeggiated. Built specifically to sidestep needing real keyboard
+  polyphony, which this sandbox doesn't have yet.
+- **`0.1V/Oct` as a digital signal** — not a bitmask, but the other sense of
+  "digital": a fixed, quantized representation (semitone = value × 120)
+  rather than a free-form analog voltage. Every `0.1V/Oct` port in the
+  sandbox — oscillators, the keyboard controller, Pitch Quantizer — gets
+  the same white wire.
+- **Henon Map, Chua Attractor, Logistic Map** — the chaos generators that
+  led here. Native WASM with a JS fallback, each verified against its real
+  compiled artifact (randomized sweeps, bounded-output checks, exact
+  iteration-count matching) before being wired into the graph.
+
+## Where this can go
+
+A digital signal is just bits, which means corrupting it on purpose is
+just math — filtering, mangling, and glitching become first-class
+operations instead of edge cases:
+
+- **Bit Crusher** — AND against a random/shrinking mask; notes vanish and
+  reappear unpredictably.
+- **Bit Rot** — a standalone corruption module for *any* digital signal:
+  each clock tick, a chance to permanently flip one more bit.
+- **XOR Collision** — combine two digital signals; get exactly the bits
+  present in one but not the other.
+- **Bit Reverse** — mirror the bit order for an instant, unrelated-feeling
+  variation on the same signal.
+- **Popcount Detonator** — count the set bits; cross a threshold, fire a
+  trigger. Chaos with a consequence.
+
+None of this works on a continuous CV wire. It only exists because the
+signal is discrete bits you're allowed to mangle.
+
+## Running it
 
 ```powershell
-# Requirements:
-# - Python 3
-# - A modern browser
-# No package install is required for the sandbox server.
+# Requirements: Python 3, a modern browser. No package install needed.
 
-# Download:
-git clone https://github.com/soundemote/soemdsp-sandbox.git
-cd soemdsp-sandbox
+git clone https://github.com/elanhickler/soemdsp-sandbox-digital-signals-audio.git
+cd soemdsp-sandbox-digital-signals-audio
 
-# Run:
 python server.py
+# open http://127.0.0.1:8765
 
-# Open:
-# http://127.0.0.1:8765
-
-# Stop:
-# Ctrl+C
-
-# Test:
 python scripts\smoke_test.py
 ```
 
-Optional artifact packet:
+## License
 
-```powershell
-# Use this only if the sibling soemdsp repo is built locally.
-C:\Users\argit\Documents\_PROGRAMMING\soemdsp\build-moved\examples\Debug\runtime_dsp_object_bound_wav_resync_demo.exe
-python server.py
-```
-
-Optional CLAP host prototype:
-
-```powershell
-# Localhost companion prototype for CLAP catalog and instance probes.
-# Render Sample has a bounded CLAP bridge.
-# Feedback touching CLAP nodes and Live Audio CLAP plans are blocked for now.
-python tools\webui-clap-host\webui_clap_host.py
-
-# Windows launcher, metadata inspection on by default:
-tools\webui-clap-host\start_webui_clap_host.cmd
-tools\webui-clap-host\start_webui_clap_host.ps1
-
-# Optional alternate bind port:
-python tools\webui-clap-host\webui_clap_host.py --port 48000
-tools\webui-clap-host\start_webui_clap_host.cmd -Port 48000
-tools\webui-clap-host\start_webui_clap_host.ps1 -Port 48000
-
-# Optional explicit catalog entry:
-python tools\webui-clap-host\webui_clap_host.py --plugin "C:\path\to\plugin.clap"
-
-# Optional native descriptor inspection:
-python tools\webui-clap-host\webui_clap_host.py --inspect-metadata
-
-# Optional create/init/destroy probe:
-python tools\webui-clap-host\webui_clap_host.py --test-instantiate
-
-# Optional JSON preflight report without starting the server:
-python tools\webui-clap-host\webui_clap_host.py --doctor --inspect-metadata
-
-# In the sandbox browser:
-# Edit the Host field if the companion is not using http://127.0.0.1:47991.
-# Click Copy Host Command if you need the Windows .cmd launcher command.
-# Click Connect Local Host.
-# Click Diagnostics to read setup counts from the running host.
-# Click Refresh Plugins to read the host catalog.
-# Add a CLAP Plugin module to store a selected catalog entry.
-
-# Prototype instance API:
-# GET /health reports host capabilities.
-# GET /health also reports hostConfig: bind host, port, Python executable, scan dirs, explicit plugins, and probe flags.
-# GET /diagnostics reports hostConfig, catalog counts, metadata errors, instantiation errors, and missing explicit plugin paths.
-# --doctor reports hostConfig, catalog counts, metadata errors, instantiation errors, and missing explicit plugin paths as JSON.
-# Capabilities include maxProcessFrames, processBatch, and offlineRenderSessions.
-# Current maxProcessFrames default is 48000.
-# POST /instances
-# GET /instances
-# GET /instances/<id>/params
-# POST /instances/<id>/param
-# POST /instances/<id>/params
-# GET /instances/<id>/editor
-# POST /instances/<id>/editor/open
-# POST /instances/<id>/editor/close
-# GET /instances/<id>/latency
-# GET /instances/<id>/tail
-# GET /instances/<id>/state
-# POST /instances/<id>/state
-# POST /instances/<id>/render/begin
-# POST /instances/<id>/process
-# POST /instances/<id>/render/end
-# POST /process-batch
-# /process can accept and return bounded planar-f32-base64 audio.
-# /process can apply a parameters array before processing the chunk.
-# CLAP_PROCESS_ERROR fails the process call instead of returning audio.
-# Direct /param and /params writes are blocked while a render session is active.
-# Abandoned render sessions are released by an idle timeout.
-# A second render/begin is rejected while a non-idle render session is active.
-# Render Sample opens one render session per CLAP instance, processes chunks, then closes the session.
-# Render Sample requires audioProcessing: true from the host.
-# Render Sample requires offlineRenderSessions: true from the host.
-# Render Sample uses maxProcessFrames for CLAP process chunk size.
-# WebUI CLAP audio lanes flatten every CLAP audio port in host port order.
-# CLAP editor status can be detected; supported Win32 clap.gui editors can open when the plugin accepts the GUI sequence.
-# CLAP latency is compensated when Render Sample injects returned CLAP output.
-# Finite CLAP tails can extend Render Sample up to the bounded tail limit; infinite tails remain metadata-only.
-# CLAP state can be saved into patch JSON and restored into a new host instance when the plugin exposes clap.state.
-# Reachable CLAP nodes are processed chunk-by-chunk in graph order.
-# Independent CLAP nodes in the same chunk can share one batch request.
-# POST /instances/<id>/safety/reset
-# DELETE /instances/<id>
-```
-
-Guides:
-
-```text
-docs/ADDING_HARDCODED_SANDBOX_MODULE.md
-docs/OSC_MODULE_NON_UI_REFERENCE.md
-docs/WEBUI_CLAP_HOST_PLAN.md
-tools/webui-clap-host/README.md
-```
-
-Boundaries:
-
-```text
-The server only writes through explicit save/settings/audio helper routes.
-Open Path is restricted to Downloads.
-The browser patch graph is demo-scoped state.
-The browser compiler is not the production soemdsp scheduler.
-The WebUI does not instantiate real C++ DSP objects yet.
-Patch files can save current module instances and settings.
-Patch files cannot define new module types by themselves.
-```
+Source-available for noncommercial use only, same as upstream. Commercial
+use requires a separate written commercial license from Soundemote. See
+[`LICENSE`](LICENSE).
