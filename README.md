@@ -71,6 +71,10 @@ that was never slow.
 
 ## 🧱 The layering this has to respect
 
+<div align="center">
+<img src="docs/assets/patch-system-layering.svg" alt="Five stacked layers — Human/Editor, Circuit/Runtime Graph, Binding (the bridge), DSP Memory, DSP Objects — with a Patch JSON load/save loop feeding back into the Runtime Graph layer" width="70%"/>
+</div>
+
 This is the non-negotiable part, carried over directly from the direction set
 for Soundemote's execution graph as a whole:
 
