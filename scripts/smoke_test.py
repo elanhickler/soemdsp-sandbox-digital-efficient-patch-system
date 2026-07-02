@@ -16311,7 +16311,7 @@ def require_node_graph_mvp_contract() -> None:
     require(
         "function nodeGraphRenderedPanValue(value, origin = 0)" in script_sources["./public/node-graph-workspace-geometry.js"]
         and "Math.round(originNumber + number) - originNumber" in script_sources["./public/node-graph-workspace-geometry.js"]
-        and "function nodeGraphWorkspaceCenterOffset(container = document.getElementById(\"nodeGraphWorkspace\"))" in script_sources["./public/node-graph-workspace-geometry.js"]
+        and "function nodeGraphWorkspaceCenterOffset(container = document.getElementById(\"nodeGraphWorkspace\"), metrics = null)" in script_sources["./public/node-graph-workspace-geometry.js"]
         and "function nodeGraphRenderedOriginOffset(" in script_sources["./public/node-graph-workspace-geometry.js"]
         and "const originOffset = nodeGraphRenderedOriginOffset(pan, workspace);" in script_sources["./public/node-graph-workspace-view.js"]
         and 'workspace.style.setProperty("--node-graph-pan-x", `${originOffset.x}px`);' in script_sources["./public/node-graph-workspace-view.js"]

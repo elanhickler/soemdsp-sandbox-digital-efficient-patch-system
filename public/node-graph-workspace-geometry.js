@@ -78,27 +78,36 @@ function nodeGraphRenderedPanValue(value, origin = 0) {
   return Object.is(rendered, -0) ? 0 : rendered;
 }
 
-function nodeGraphWorkspaceCenterOffset(container = document.getElementById("nodeGraphWorkspace")) {
+// Shared by nodeGraphWorkspaceCenterOffset/nodeGraphRenderedPan so
+// nodeGraphRenderedOriginOffset (their only shared caller, and the hot path
+// for every pan/zoom update) can measure the workspace's rect + border widths
+// ONCE instead of each sub-function forcing its own separate synchronous
+// layout for the exact same element on the exact same tick.
+function nodeGraphWorkspaceRectMetrics(container) {
   const rect = container?.getBoundingClientRect?.();
   const style = container ? getComputedStyle(container) : null;
-  const borderLeft = Number.parseFloat(style?.borderLeftWidth) || 0;
-  const borderTop = Number.parseFloat(style?.borderTopWidth) || 0;
-  const borderRight = Number.parseFloat(style?.borderRightWidth) || 0;
-  const borderBottom = Number.parseFloat(style?.borderBottomWidth) || 0;
   return {
-    x: borderLeft + Math.max(0, (Number(rect?.width) || 0) - borderLeft - borderRight) * 0.5,
-    y: borderTop + Math.max(0, (Number(rect?.height) || 0) - borderTop - borderBottom) * 0.5,
+    rect,
+    borderLeft: Number.parseFloat(style?.borderLeftWidth) || 0,
+    borderTop: Number.parseFloat(style?.borderTopWidth) || 0,
+    borderRight: Number.parseFloat(style?.borderRightWidth) || 0,
+    borderBottom: Number.parseFloat(style?.borderBottomWidth) || 0,
   };
 }
 
-function nodeGraphRenderedPan(pan = nodeGraphMvp.pan || { x: 0, y: 0 }, container = document.getElementById("nodeGraphWorkspace")) {
-  const rect = container?.getBoundingClientRect?.();
-  const style = container ? getComputedStyle(container) : null;
-  const borderLeft = Number.parseFloat(style?.borderLeftWidth) || 0;
-  const borderTop = Number.parseFloat(style?.borderTopWidth) || 0;
+function nodeGraphWorkspaceCenterOffset(container = document.getElementById("nodeGraphWorkspace"), metrics = null) {
+  const m = metrics || nodeGraphWorkspaceRectMetrics(container);
   return {
-    x: nodeGraphRenderedPanValue(pan.x, (rect?.left || 0) + borderLeft),
-    y: nodeGraphRenderedPanValue(pan.y, (rect?.top || 0) + borderTop),
+    x: m.borderLeft + Math.max(0, (Number(m.rect?.width) || 0) - m.borderLeft - m.borderRight) * 0.5,
+    y: m.borderTop + Math.max(0, (Number(m.rect?.height) || 0) - m.borderTop - m.borderBottom) * 0.5,
+  };
+}
+
+function nodeGraphRenderedPan(pan = nodeGraphMvp.pan || { x: 0, y: 0 }, container = document.getElementById("nodeGraphWorkspace"), metrics = null) {
+  const m = metrics || nodeGraphWorkspaceRectMetrics(container);
+  return {
+    x: nodeGraphRenderedPanValue(pan.x, (m.rect?.left || 0) + m.borderLeft),
+    y: nodeGraphRenderedPanValue(pan.y, (m.rect?.top || 0) + m.borderTop),
   };
 }
 
@@ -106,8 +115,9 @@ function nodeGraphRenderedOriginOffset(
   pan = nodeGraphMvp.pan || { x: 0, y: 0 },
   container = document.getElementById("nodeGraphWorkspace"),
 ) {
-  const center = nodeGraphWorkspaceCenterOffset(container);
-  const renderedPan = nodeGraphRenderedPan(pan, container);
+  const metrics = nodeGraphWorkspaceRectMetrics(container);
+  const center = nodeGraphWorkspaceCenterOffset(container, metrics);
+  const renderedPan = nodeGraphRenderedPan(pan, container, metrics);
   return {
     x: center.x + renderedPan.x,
     y: center.y + renderedPan.y,

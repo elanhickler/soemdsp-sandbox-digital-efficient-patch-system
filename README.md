@@ -22,6 +22,7 @@
 - [The real bottleneck (it isn't file size)](#-the-real-bottleneck-it-isnt-file-size--measured-not-guessed)
 - [Phase 4, round 1: the heatmap fix](#-phase-4-round-1-the-heatmap-was-forcing-layout-on-every-edit)
 - [Phase 4, round 2: a correct fix that didn't help](#-phase-4-round-2-a-correct-fix-that-turned-out-not-to-matter-reported-honestly)
+- [Phase 4, round 3: why the layer read count wasn't the cost](#-phase-4-round-3-a-real-finding-and-why-it-stops-here-for-now)
 - [The layering this has to respect](#-the-layering-this-has-to-respect)
 - [The proof ladder](#-the-proof-ladder)
 - [Where serialized connections meet SIMD and video](#-where-serialized-connections-meet-simd-and-video)
@@ -158,6 +159,38 @@ with a speedup it didn't produce in this scenario. The real remaining cost
 for live pan/zoom is `nodeGraphRenderedOriginOffset`'s `getBoundingClientRect()`
 call, which is the actual candidate for round 3.
 
+### 🩹 Phase 4, round 3: a real finding, and why it stops here for now
+
+`nodeGraphRenderedOriginOffset()` was calling `nodeGraphWorkspaceCenterOffset()`
+and `nodeGraphRenderedPan()` back to back — and both independently ran their
+*own* `getBoundingClientRect()` + `getComputedStyle()` on the same workspace
+element, on the same tick, with no style write in between. That's a genuinely
+redundant duplicate measurement, so it was refactored into one shared read
+(`nodeGraphWorkspaceRectMetrics()`), passed into both — fully backward
+compatible, every other caller of those two functions still works exactly as
+before.
+
+**Measured honestly again:** baseline ~17 ms, after the fix ~17.1 ms. No
+change. The reason matters more than the fix: **a forced synchronous layout
+is paid once, by whichever read happens first after a style write — reading
+the same geometry a second time right after is nearly free**, because the
+browser caches layout results until the next write invalidates them. Cutting
+two redundant reads down to one doesn't remove the cost, because the cost was
+never about *how many* reads happen — it's about the fact that *any* read
+happens at all, synchronously, on a tick that just wrote styles.
+
+That's the real lever for a further win: **stop reading `getBoundingClientRect()`
+on every pan/zoom tick at all**, by caching the workspace's rect and border
+metrics across calls and only re-measuring when the workspace's actual
+geometry changes (a resize). That's a bigger, riskier change than rounds 1–3 —
+`ResizeObserver` catches *size* changes but not pure *position* shifts (e.g. a
+sidebar toggling, or the page scrolling), and this workspace rect feeds pixel-
+accurate mouse-to-graph coordinate math, so a stale cached position would show
+up as real, hard-to-notice pan/zoom drift rather than a crash. It deserves its
+own proof — checking every place the workspace can move without resizing —
+rather than a same-day fix on the back of round 3's smaller finding. Stopping
+Phase 4 here for now with that documented as the next real target.
+
 ---
 
 ## 🧱 The layering this has to respect
@@ -279,7 +312,7 @@ the other.
 | 1 | Profile real load/save/edit timings on today's format | ✅ done — see numbers above |
 | 2 | Minify JSON output, measure the delta | ⏸️ deprioritized — Phase 1 showed parse/serialize is <1ms; not the bottleneck |
 | 3 | Identify the actual hot path in normalize/rebuild | ✅ done — it's DOM rebuild, not normalize/rebuild: `applyNodeGraphPatchToDom` (~50%), `applyNodeGraphZoom` (~19%), `renderNodeGraphConnectionList` (~10%) |
-| 4 | Targeted fix for the hot path, re-measure | 🟡 in progress — round 1: deferred heatmap in commit path, ~113.6ms → ~91.4ms (~20% faster). Round 2: deferred the same call in the pan/zoom path (correct, kept, but measured **no** speedup there — real cost is `nodeGraphRenderedOriginOffset`'s `getBoundingClientRect()`, next up). Per-node loop (~39ms) still open |
+| 4 | Targeted fix for the hot path, re-measure | ⏸️ paused after round 3 — see write-up. Round 1: deferred heatmap in commit path (~113.6ms → ~91.4ms, ~20% faster). Round 2: same deferral in pan/zoom path (correct, no measured win — layout was already forced earlier). Round 3: merged two redundant `getBoundingClientRect()` reads into one (correct, still no measured win — the cost is *that a read happens*, not *how many*). Real fix (caching workspace rect, invalidated on resize) needs its own proof before attempting — deliberately not rushed |
 | 5 | Only if still warranted: reshape in-memory + serialized patch data toward stable-ID-keyed collections (serves SIMD *and* diff-friendly collaboration at once) | 🔲 not started |
 
 This table is the honest state of things: a plan, not a changelog. Phase 1's
