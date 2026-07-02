@@ -35,6 +35,7 @@ work tries not to obstruct it, but doesn't claim to deliver it.
 - [Diff-friendly online collaboration (corrected)](#-the-same-shape-also-buys-diff-friendly-online-collaboration--with-a-correction)
 - [Phase 6: a real multiplayer merge engine](#-phase-6-an-actual-multiplayer-merge-engine)
 - [Phase 6, round 2: applying a merge live](#-phase-6-round-2-applying-a-merge-to-the-live-app-without-crashing-it)
+- [Phase 6, round 3: the actual network hop](#-phase-6-round-3-the-actual-network-hop)
 - [Plan of attack](#-plan-of-attack)
 - [Running it](#-running-it)
 - [License](#-license)
@@ -472,9 +473,48 @@ other edit in the app already goes through.
 This closes the loop: pure merge (round 1) → correctly applying a merge
 result to a live patch without crashing on stale references (round 2). The
 only missing piece before this could support real multiplayer is a
-transport to carry merged docs between two actual browser sessions —
-deliberately still not attempted, for the same reason round 1 didn't
-attempt it.
+transport to carry merged docs between two actual browser sessions.
+
+### 🔀 Phase 6, round 3: the actual network hop
+
+**The transport (`server.py` + `node-graph-patch-lww-transport.js`, new):**
+an in-memory, HTTP polling relay — deliberately not websockets. Two new
+endpoints: `POST /api/multiplayer/broadcast` (append a message to a
+session's log) and `GET /api/multiplayer/poll?sessionId=…&since=…` (return
+everything appended since a given index). Session logs live only in
+`server.py`'s process memory, capped at 4,000 messages and 64 concurrent
+sessions, and are lost on restart — this is a proof that the pipeline works
+over a real network hop, not a production realtime transport. Polling
+instead of websockets keeps the README's "no package install needed"
+promise true; this is genuinely the smallest thing that proves the point.
+
+**Verified against the real server, not simulated in-process:** ran an
+isolated `server.py` instance and hit it with real HTTP requests —
+
+- Broadcast a field edit and a delete as one client, polled them back as
+  another — both messages round-tripped exactly, in order.
+- Incremental polling (`since=1` after two broadcasts) returned *only* the
+  new message, not a resend of everything — the actual mechanism a live
+  client would use to avoid re-processing history every poll.
+- Input validation: a malicious/malformed `sessionId` (attempted injection
+  characters) and a non-object `message` body both correctly rejected with
+  `400`, not silently accepted or crashed on.
+
+**Then the full pipeline, end to end, in a real browser hitting a real
+server:** one simulated client broadcast a param edit over the actual HTTP
+relay this page was being served from; a second simulated client polled
+for it, merged it into its own local doc, and applied the result to its
+live patch — verified in the in-memory patch **and** the real DOM slider,
+both showing the remote value. Broadcast → poll → merge → apply-to-DOM,
+over an actual network round trip, not a single in-process function call
+pretending to be two clients.
+
+**What's still not here, on purpose:** no room/session-creation UI, no
+presence (who else is in this patch right now), no reconnect/resume logic,
+no live-editor wiring (still nothing calls this automatically when you drag
+a slider). Those are each their own round if this is worth continuing —
+this round's job was proving the wire actually carries the message
+correctly, which it does.
 
 ---
 
@@ -487,7 +527,7 @@ attempt it.
 | 3 | Identify the actual hot path in normalize/rebuild | ✅ done — it's DOM rebuild, not normalize/rebuild: `applyNodeGraphPatchToDom` (~50%), `applyNodeGraphZoom` (~19%), `renderNodeGraphConnectionList` (~10%) |
 | 4 | Targeted fix for the hot path, re-measure | ⏸️ paused after round 4 — see write-up. Round 1: deferred heatmap in commit path (~113.6ms → ~91.4ms, ~20% faster). Round 2 & 3: correct fixes, honestly measured **no** speedup (layout was already forced earlier / read count wasn't the cost). Round 4: rAF-throttled the pan-drag handler — verified ~40x fewer forced-layout reads during a fast drag, zero precision loss, no geometry caching/staleness risk |
 | 5 | Reshape patch data toward stable-ID-keyed collections | 🟡 round 1 done: `nodes` now serializes keyed by id (was a positional array). Backward compatible (old array-format saves still load), round-trip verified byte-identical. The diff-friendliness claim was tested and **corrected** — see write-up. `connections`/`graphConnections`/`modulations` not yet reshaped (need a composite key, separate round) |
-| 6 | Build a real multiplayer merge engine | 🟡 round 1: standalone LWW merge engine (`node-graph-patch-lww-merge.js`), commutative/associative/idempotent verified directly. Round 2: bridged merged docs into the live app (`node-graph-patch-lww-live.js`) — found and fixed a real crash risk (deleting a connected node), verified against the actual DOM, not just data. Still no networking/transport — deliberately the next, separate round. Timestamp source (wall-clock vs. logical clock) is an open, documented gap |
+| 6 | Build a real multiplayer merge engine | 🟡 round 1: standalone LWW merge engine, commutative/associative/idempotent verified directly. Round 2: bridged merged docs into the live app — found and fixed a real crash risk (deleting a connected node), verified against the actual DOM. Round 3: an actual HTTP polling transport (`server.py` + `node-graph-patch-lww-transport.js`) — verified end to end against a real running server, including a real browser DOM. Still missing: live-editor wiring (nothing calls this on a slider drag yet), presence/reconnect, a clock-skew-resistant timestamp source |
 
 This table is the honest state of things: a plan, not a changelog. Phase 1's
 own numbers reordered the plan — they pointed straight past JSON format and

@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 from datetime import datetime, timezone
 from email.utils import formatdate
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -46,6 +47,19 @@ DEFAULT_SOEMDSP_ROOT = ROOT.parent / "soemdsp"
 DEFAULT_MANIFEST = (
     DEFAULT_SOEMDSP_ROOT / "runtime_dsp_object_bound_wav_resync_demo.manifest.json"
 )
+
+# Phase 6 (README.md "Plan of attack"): a deliberately minimal transport for
+# the LWW merge engine (public/node-graph-patch-lww-merge.js /
+# node-graph-patch-lww-live.js) -- an in-memory, polling relay, not
+# websockets. This is a proof that the merge pipeline works end to end over
+# a real network hop between two independent sessions, not a production
+# realtime transport. Sessions and their message logs live only in this
+# process's memory and are lost on restart -- by design, for a proof.
+MULTIPLAYER_MAX_SESSIONS = 64
+MULTIPLAYER_MAX_MESSAGES_PER_SESSION = 4000
+MULTIPLAYER_MAX_MESSAGE_BYTES = 16 * 1024
+multiplayer_lock = threading.Lock()
+multiplayer_sessions: dict[str, list[dict]] = {}
 STATIC_MIME_TYPES = {
     ".css": "text/css",
     ".js": "application/javascript",
@@ -338,6 +352,9 @@ class SandboxServer(BaseHTTPRequestHandler):
         if parsed.path == "/api/audio-file/transcode-data-url":
             self.audio_file_transcode_data_url()
             return
+        if parsed.path == "/api/multiplayer/broadcast":
+            self.multiplayer_broadcast()
+            return
         self.reject_mutation_method()
 
     def do_PUT(self) -> None:
@@ -404,6 +421,13 @@ class SandboxServer(BaseHTTPRequestHandler):
                 self.send_error(405, "Method not allowed")
                 return
             self.serve_demo_patch_file(parsed.query)
+            return
+
+        if parsed.path == "/api/multiplayer/poll":
+            if not send_body:
+                self.send_error(405, "Method not allowed")
+                return
+            self.multiplayer_poll(parsed.query)
             return
 
         if parsed.path == "/artifact":
@@ -607,6 +631,50 @@ class SandboxServer(BaseHTTPRequestHandler):
             self.send_json({"ok": False, "error": "patch not found"}, status=404)
             return
         self.serve_file(path)
+
+    def multiplayer_broadcast(self) -> None:
+        payload = self.read_json_payload("multiplayer message", max_bytes=MULTIPLAYER_MAX_MESSAGE_BYTES)
+        if payload is None:
+            return
+        session_id = str(payload.get("sessionId") or "").strip()
+        message = payload.get("message")
+        if not session_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id):
+            self.send_json({"ok": False, "error": "invalid sessionId"}, status=400)
+            return
+        if not isinstance(message, dict):
+            self.send_json({"ok": False, "error": "message must be an object"}, status=400)
+            return
+
+        with multiplayer_lock:
+            if session_id not in multiplayer_sessions and len(multiplayer_sessions) >= MULTIPLAYER_MAX_SESSIONS:
+                self.send_json({"ok": False, "error": "too many active sessions"}, status=507)
+                return
+            log = multiplayer_sessions.setdefault(session_id, [])
+            log.append(message)
+            if len(log) > MULTIPLAYER_MAX_MESSAGES_PER_SESSION:
+                del log[: len(log) - MULTIPLAYER_MAX_MESSAGES_PER_SESSION]
+            index = len(log)
+
+        self.send_json({"ok": True, "index": index})
+
+    def multiplayer_poll(self, query: str) -> None:
+        params = parse_qs(query)
+        session_id = str(params.get("sessionId", [""])[0]).strip()
+        if not session_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id):
+            self.send_json({"ok": False, "error": "invalid sessionId"}, status=400)
+            return
+        try:
+            since = max(0, int(params.get("since", ["0"])[0]))
+        except ValueError:
+            self.send_json({"ok": False, "error": "invalid since"}, status=400)
+            return
+
+        with multiplayer_lock:
+            log = multiplayer_sessions.get(session_id, [])
+            messages = log[since:]
+            next_since = len(log)
+
+        self.send_json({"ok": True, "messages": messages, "nextSince": next_since})
 
     def save_demo_patch(self) -> None:
         parsed = urlparse(self.path)
