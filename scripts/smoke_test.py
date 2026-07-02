@@ -16857,7 +16857,10 @@ def require_readme_scheduler_contract() -> None:
         "Turing Machine",
         "Pitch Quantizer",
         "Chord Memory",
-        "Henon Map, Chua Attractor, Logistic Map",
+        "Henon Map",
+        "Chua Attractor",
+        "Logistic Map",
+        "Chord Sequencer",
         "Lossy by design",
         "2^53",
     ]:
