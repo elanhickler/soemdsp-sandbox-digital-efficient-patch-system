@@ -70,6 +70,11 @@ function stopNodeGraphLwwMultiplayerSession() {
   if (nodeGraphLwwMultiplayer.pollTimer) {
     window.clearInterval(nodeGraphLwwMultiplayer.pollTimer);
   }
+  if (nodeGraphLwwBroadcastRafHandle) {
+    window.cancelAnimationFrame(nodeGraphLwwBroadcastRafHandle);
+    nodeGraphLwwBroadcastRafHandle = 0;
+  }
+  nodeGraphLwwPendingBroadcastEdits.clear();
   nodeGraphLwwMultiplayer.active = false;
   nodeGraphLwwMultiplayer.sessionId = null;
   nodeGraphLwwMultiplayer.doc = null;
@@ -77,18 +82,47 @@ function stopNodeGraphLwwMultiplayerSession() {
   nodeGraphLwwMultiplayer.pollTimer = 0;
 }
 
-// Called from syncNodeGraphPatchParameterFromSlider (node-graph-slider-dragging.js)
-// after it writes a param value locally. Keeps this site's own LWW doc in
-// sync (so a later remote merge has an up-to-date view of "what I've
-// already changed") and broadcasts the edit -- fire-and-forget, since a
-// dropped broadcast just means this specific value gets caught up on the
-// next successful one for that field, not lost forever (LWW is idempotent).
-function nodeGraphLwwNotifyLocalFieldEdit(nodeId, path, value) {
+// A native range slider's "input" event can fire far more than once per
+// visible frame while dragging -- broadcasting on every single one would
+// mean a network POST per pixel of mouse movement, not per meaningful
+// update. Same reasoning and same fix as Phase 4 round 4's pan-drag
+// throttle: coalesce to at most one broadcast per animation frame per
+// field, using the latest value. A user's hand can't produce updates faster
+// than the screen can show them, so anything beyond one-per-frame is
+// network traffic nobody asked for.
+const nodeGraphLwwPendingBroadcastEdits = new Map(); // fieldKey -> { nodeId, path, value }
+let nodeGraphLwwBroadcastRafHandle = 0;
+
+function nodeGraphLwwFlushPendingBroadcasts() {
+  if (nodeGraphLwwBroadcastRafHandle) {
+    window.cancelAnimationFrame(nodeGraphLwwBroadcastRafHandle);
+    nodeGraphLwwBroadcastRafHandle = 0;
+  }
   if (!nodeGraphLwwMultiplayer.active || !nodeGraphLwwMultiplayer.doc) {
+    nodeGraphLwwPendingBroadcastEdits.clear();
     return;
   }
   const updatedAt = Date.now();
   const siteId = nodeGraphLwwSiteId();
-  nodeGraphLwwMultiplayer.doc = nodeGraphLwwApplyFieldEdit(nodeGraphLwwMultiplayer.doc, nodeId, path, value, updatedAt, siteId);
-  nodeGraphLwwBroadcastEdit(nodeGraphLwwMultiplayer.sessionId, nodeId, path, value, updatedAt, siteId).catch(() => {});
+  for (const { nodeId, path, value } of nodeGraphLwwPendingBroadcastEdits.values()) {
+    nodeGraphLwwMultiplayer.doc = nodeGraphLwwApplyFieldEdit(nodeGraphLwwMultiplayer.doc, nodeId, path, value, updatedAt, siteId);
+    nodeGraphLwwBroadcastEdit(nodeGraphLwwMultiplayer.sessionId, nodeId, path, value, updatedAt, siteId).catch(() => {});
+  }
+  nodeGraphLwwPendingBroadcastEdits.clear();
+}
+
+// Called from syncNodeGraphPatchParameterFromSlider (node-graph-slider-dragging.js)
+// after it writes a param value locally, on every raw "input" event. Queues
+// the latest value for this field and schedules at most one flush per
+// animation frame -- fire-and-forget, since a dropped broadcast just means
+// this field catches up on the next successful one (LWW is idempotent).
+function nodeGraphLwwNotifyLocalFieldEdit(nodeId, path, value) {
+  if (!nodeGraphLwwMultiplayer.active || !nodeGraphLwwMultiplayer.doc) {
+    return;
+  }
+  nodeGraphLwwPendingBroadcastEdits.set(nodeGraphLwwFieldKey(nodeId, path), { nodeId, path, value });
+  if (nodeGraphLwwBroadcastRafHandle) {
+    return;
+  }
+  nodeGraphLwwBroadcastRafHandle = window.requestAnimationFrame(nodeGraphLwwFlushPendingBroadcasts);
 }

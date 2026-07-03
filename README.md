@@ -40,6 +40,7 @@ work tries not to obstruct it, but doesn't claim to deliver it.
 - [Phase 6, round 2: applying a merge live](#-phase-6-round-2-applying-a-merge-to-the-live-app-without-crashing-it)
 - [Phase 6, round 3: the actual network hop](#-phase-6-round-3-the-actual-network-hop)
 - [Phase 6, round 4: wiring real slider drags](#-phase-6-round-4-wiring-it-to-real-slider-drags)
+- [Phase 6, round 5: throttling the broadcast rate](#-phase-6-round-5-a-slider-drag-was-broadcasting-once-per-pixel)
 - [Plan of attack](#-plan-of-attack)
 - [Running it](#-running-it)
 - [License](#-license)
@@ -634,6 +635,49 @@ wired yet — only parameter sliders are. Timestamps are still plain
 wall-clock numbers (the clock-skew gap from round 1 is unresolved). No UI
 exists to start/stop a session or see who else is connected.
 
+### 🔀 Phase 6, round 5: a slider drag was broadcasting once per pixel
+
+A fair concern raised after round 4 shipped: does dragging a slider really
+broadcast on *every pixel of movement*? Measured instead of assumed —
+**yes.** Simulating a fast drag (60 `input` events, roughly what a real drag
+produces) resulted in **60 separate network broadcasts**, a strict 1:1
+ratio, zero throttling. A slider drag can fire far more `input` events per
+second than a screen can even show, let alone than a network relay needs.
+
+**The fix:** the exact same rAF-coalescing technique Phase 4 round 4 already
+proved for pan-dragging — queue the latest value per field and flush at most
+once per animation frame, instead of once per raw event. A user's hand can't
+produce meaningfully distinct updates faster than the screen refreshes, so
+anything beyond one-per-frame was purely wasted network traffic.
+
+**A gap the first version of this fix had, caught by testing rather than
+assuming it worked:** relying purely on the next animation frame to flush
+has a real failure mode — `requestAnimationFrame` can be suspended when a
+tab is backgrounded or not actively rendering. Measured directly: queued a
+pending broadcast, waited 200ms of real wall-clock time, and it **never
+flushed** — the queued edit sat there indefinitely. Phase 4 round 4 already
+had the answer to this from its own pan-drag work: don't rely purely on the
+next frame — also flush explicitly at the natural "end of this gesture"
+signal. For pan-dragging that was pointer-up; for a slider it's the native
+`change` event, which fires exactly once when the user releases it. Added a
+`change` listener (`node-graph-module-rendering.js`) that flushes
+immediately, so the final value is guaranteed to go out promptly regardless
+of frame timing.
+
+**Verified, both halves:**
+
+- **Coalescing:** simulated 60 `input` events during a drag — **zero**
+  broadcasts while dragging, then exactly **one** on release, carrying the
+  correct final value. 60 events → 1 broadcast, not 60.
+- **Full round trip with the fix in place:** 30 drag events on a real
+  parameter, released — exactly one message landed on the server, with the
+  exact final value, and the live in-memory patch matched it precisely.
+
+This directly answers the original concern: broadcast frequency is now
+capped at once per animation frame per field (plus one guaranteed flush on
+release), not once per raw input event — the "no faster than a human can
+actually perceive it" ceiling the concern was asking for.
+
 ---
 
 ## 🗺️ Plan of attack
@@ -645,7 +689,7 @@ exists to start/stop a session or see who else is connected.
 | 3 | Identify the actual hot path in normalize/rebuild | ✅ done — it's DOM rebuild, not normalize/rebuild: `applyNodeGraphPatchToDom` (~50%), `applyNodeGraphZoom` (~19%), `renderNodeGraphConnectionList` (~10%) |
 | 4 | Targeted fix for the hot path, re-measure | ⏸️ paused after round 4 — see write-up. Round 1: deferred heatmap in commit path (~113.6ms → ~91.4ms, ~20% faster). Round 2 & 3: correct fixes, honestly measured **no** speedup (layout was already forced earlier / read count wasn't the cost). Round 4: rAF-throttled the pan-drag handler — verified ~40x fewer forced-layout reads during a fast drag, zero precision loss, no geometry caching/staleness risk |
 | 5 | Reshape patch data toward stable-ID-keyed collections | 🟡 round 1 done: `nodes` now serializes keyed by id (was a positional array). Backward compatible (old array-format saves still load), round-trip verified byte-identical. The diff-friendliness claim was tested and **corrected** — see write-up. `connections`/`graphConnections`/`modulations` not yet reshaped (need a composite key, separate round) |
-| 6 | Build a real multiplayer merge engine | 🟡 round 1: standalone LWW merge engine, commutative/associative/idempotent verified directly. Round 2: bridged merged docs into the live app — found and fixed a real crash risk (deleting a connected node). Round 3: an actual HTTP polling transport — verified end to end against a real server. Round 4: wired real slider drags to auto-broadcast, and a background timer to auto-apply remote edits — zero cost when inactive, verified atomically after a false alarm in the test methodology itself (documented). Still missing: node position/create/delete wiring, presence/reconnect UI, a clock-skew-resistant timestamp source |
+| 6 | Build a real multiplayer merge engine | 🟡 round 1: standalone LWW merge engine, verified directly. Round 2: bridged merged docs into the live app, found and fixed a crash risk. Round 3: an actual HTTP polling transport, verified end to end. Round 4: wired real slider drags to auto-broadcast + auto-apply. Round 5: found and fixed a real problem — drags were broadcasting once per pixel (60 events → 60 network calls); rAF-coalesced to once per frame, plus a guaranteed flush on release since `requestAnimationFrame` can stall in a backgrounded tab (caught by measuring, not assuming). Still missing: node position/create/delete wiring, presence/reconnect UI, a clock-skew-resistant timestamp source |
 
 This table is the honest state of things: a plan, not a changelog. Phase 1's
 own numbers reordered the plan — they pointed straight past JSON format and

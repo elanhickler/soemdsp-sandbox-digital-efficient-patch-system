@@ -235,6 +235,17 @@ function attachNodeGraphNodeEvents(node) {
       }
       scheduleNodeGraphLiveParameterSync();
     });
+    // "change" fires once when the user releases the slider. The
+    // multiplayer broadcast queued by the "input" handler above is
+    // rAF-coalesced (node-graph-patch-lww-editor-wiring.js) -- flushing it
+    // here too guarantees the FINAL value goes out promptly even if the
+    // next animation frame is delayed or suspended (e.g. a backgrounded
+    // tab), same safety net Phase 4 round 4 used for pan-drag release.
+    slider.addEventListener("change", () => {
+      if (typeof nodeGraphLwwFlushPendingBroadcasts === "function") {
+        nodeGraphLwwFlushPendingBroadcasts();
+      }
+    });
   }
   for (const control of node.querySelectorAll("[data-knob-widget-control]")) {
     observeNodeGraphKnobWidgetSize(control);
